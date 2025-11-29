@@ -103,14 +103,15 @@
         // --- CONFIGURATION ---
         const CONFIG = {
             radius: 1.5,
-            yMin: 0.8,
-            yMax: 1.8,
-            defaultHeight: 1.3,
+            // Increased sensitivity: Narrower range means less movement needed for full volume control
+            yMin: 1.0,  // Waist height (approx)
+            yMax: 1.4,  // Chest height (approx) - 40cm range for full volume
+            defaultHeight: 1.2, // Start at 50% volume
+            smoothing: 0.15,    // Lower = smoother but slower, Higher = snappier
             colors: [0xff0055, 0x00ffaa, 0x00aaff, 0xffaa00, 0xaa00ff, 0xffff00, 0xffffff] 
         };
 
         // --- TRACK CONFIGURATION ---
-        // Updated to match specific repo filenames with URL encoding for spaces
         const TRACKS = {
             jazz: [
                 'stems/jazz/0%20Drums.mp3',
@@ -207,7 +208,12 @@
             constructor(index, startAngle, audioBuffer = null, fileName = "Stem") {
                 this.index = index;
                 this.angle = startAngle;
+                this.currentY = CONFIG.defaultHeight;
                 
+                // Target states for smoothing
+                this.targetAngle = startAngle;
+                this.targetY = CONFIG.defaultHeight;
+
                 const geometry = new THREE.IcosahedronGeometry(0.15, 1);
                 const color = CONFIG.colors[index % CONFIG.colors.length];
                 
@@ -226,7 +232,7 @@
                 this.mesh.userData = { name: fileName };
                 this.audio = new StemAudio(audioCtx, audioBuffer);
 
-                this.currentY = CONFIG.defaultHeight;
+                // Initial Instant placement
                 this.updatePositionFromAngle(startAngle);
                 
                 scene.add(this.mesh);
@@ -236,31 +242,58 @@
                 this.audio.start();
             }
 
+            setTargetState(angle, height) {
+                this.targetAngle = angle;
+                
+                // Clamp Height for logic, but allow visual float
+                const clampedH = Math.max(CONFIG.yMin - 0.2, Math.min(CONFIG.yMax + 0.2, height));
+                this.targetY = clampedH;
+            }
+
             updatePositionFromAngle(angle) {
                 this.angle = angle;
+                // Ring Math
                 this.mesh.position.x = CONFIG.radius * Math.sin(angle);
                 this.mesh.position.z = -CONFIG.radius * Math.cos(angle);
                 this.mesh.position.y = this.currentY;
+                
                 this.mesh.lookAt(0, this.currentY, 0);
+                
                 if (this.audio) {
                     this.audio.setPosition(this.mesh.position.x, this.mesh.position.y, this.mesh.position.z);
                 }
             }
 
             updateVolumeFromHeight() {
+                // Map Y range to 0.0 - 1.0 Volume
                 let normalized = (this.currentY - CONFIG.yMin) / (CONFIG.yMax - CONFIG.yMin);
-                normalized = Math.max(0, Math.min(1, normalized));
+                normalized = Math.max(0, Math.min(1, normalized)); // Clamp hard for volume
                 
                 if (this.audio) this.audio.setVolume(normalized);
                 
-                this.material.opacity = 0.3 + (normalized * 0.7);
+                // Visual feedback
+                this.material.opacity = 0.2 + (normalized * 0.8);
                 this.coreMaterial.opacity = normalized;
                 this.core.scale.setScalar(0.5 + normalized);
             }
 
             update(time) {
+                // 1. SMOOTHING LOGIC (Lerp)
+                // Angle Lerp (Simple lerp works fine if we don't wrap around PI/-PI boundary often, 
+                // but for a jukebox mostly in front, standard lerp is safe enough. 
+                // For full 360 safety, we'd take shortest path).
+                this.angle += (this.targetAngle - this.angle) * CONFIG.smoothing;
+                this.currentY += (this.targetY - this.currentY) * CONFIG.smoothing;
+
+                // 2. Apply updates
+                this.updatePositionFromAngle(this.angle);
+                this.updateVolumeFromHeight();
+
+                // 3. Audio Reactivity
+                // Idle rotation
                 this.mesh.rotation.z = time * 0.5;
                 this.mesh.rotation.y = time * 0.2;
+                
                 if (this.audio) {
                     const energy = this.audio.getAnalysis();
                     const scale = 1 + (energy / 255) * 0.4;
@@ -335,7 +368,6 @@
         async function loadTrack(trackKey) {
             initAudioContext();
             const statusText = document.getElementById('status-text');
-            const loadingBar = document.getElementById('loading-bar');
             
             // ENVIRONMENT CHECK
             if (window.location.protocol === 'blob:' || window.location.href.includes('usercontent')) {
@@ -379,7 +411,7 @@
                 }
 
                 loadedCount++;
-                loadingBar.style.width = `${(loadedCount / fileList.length) * 100}%`;
+                document.getElementById('loading-bar').style.width = `${(loadedCount / fileList.length) * 100}%`;
             }
 
             if (stems.length > 0) {
@@ -486,11 +518,17 @@
 
         function onMouseMove(e) {
             if (!isMouseDown || !grabbedObject || renderer.xr.isPresenting) return;
+            
+            // Map Mouse X to Angle
             const x = (e.clientX / window.innerWidth) * 2 - 1;
+            const targetAngle = x * (Math.PI / 1.5);
+            
+            // Map Mouse Y to Height (Sensitive range)
             const y = -(e.clientY / window.innerHeight) * 2 + 1;
-            const angle = x * (Math.PI / 1.5);
-            const height = ((y + 1) / 2) * (CONFIG.yMax - CONFIG.yMin + 0.5) + (CONFIG.yMin - 0.2);
-            updateStemState(grabbedObject, angle, height);
+            const targetHeight = ((y + 1) / 2) * (CONFIG.yMax - CONFIG.yMin + 0.5) + (CONFIG.yMin - 0.2);
+
+            // Use smoothed setter
+            grabbedObject.setTargetState(targetAngle, targetHeight);
         }
 
         function onMouseUp() {
@@ -502,21 +540,19 @@
             isMouseDown = false;
         }
 
-        function updateStemState(stem, angle, height) {
-            const clampedHeight = Math.max(0.5, Math.min(2.5, height));
-            stem.currentY = clampedHeight;
-            stem.updatePositionFromAngle(angle);
-            stem.updateVolumeFromHeight();
-        }
-
         function render(time) {
             stems.forEach(stem => stem.update(time / 1000));
 
             if (grabbedObject && grabbingController) {
                 const controllerPos = new THREE.Vector3();
                 grabbingController.getWorldPosition(controllerPos);
-                const angle = Math.atan2(controllerPos.x, -controllerPos.z); 
-                updateStemState(grabbedObject, angle, controllerPos.y);
+                
+                // VR: Calculate Angle
+                const targetAngle = Math.atan2(controllerPos.x, -controllerPos.z); 
+                
+                // VR: Use controller height directly
+                // Use smoothed setter
+                grabbedObject.setTargetState(targetAngle, controllerPos.y);
             }
 
             if (!grabbedObject) {
