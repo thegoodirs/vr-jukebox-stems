@@ -145,52 +145,9 @@
         let grabAngleOffset = 0;
         let grabHeightOffset = 0;
         
-        // Progress Bar
-        let progressBarFill = null;
-        let audioStartTime = 0;
-        
         let mouse = new THREE.Vector2();
         let mouseRaycaster = new THREE.Raycaster();
         let isMouseDown = false;
-
-        // --- HELPER: LABEL GENERATOR ---
-        function createTextLabel(message) {
-            try {
-                const canvas = document.createElement('canvas');
-                const context = canvas.getContext('2d');
-                
-                if (!context) {
-                    console.warn("2D Context not available for label");
-                    return new THREE.Object3D();
-                }
-                
-                // High res for clear text
-                const fontSize = 48;
-                canvas.width = 512;
-                canvas.height = 128;
-                
-                context.font = `bold ${fontSize}px Helvetica, Arial, sans-serif`;
-                context.textAlign = "center";
-                context.textBaseline = "middle";
-                
-                // Text color and glow
-                context.fillStyle = "rgba(255, 255, 255, 1.0)";
-                context.shadowColor = "rgba(0, 255, 255, 0.8)";
-                context.shadowBlur = 10;
-                context.fillText(message || "Track", canvas.width / 2, canvas.height / 2);
-                
-                const texture = new THREE.CanvasTexture(canvas);
-                const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
-                const sprite = new THREE.Sprite(material);
-                
-                // Aspect ratio scale (width/height * desired height)
-                sprite.scale.set(1.0, 0.25, 1.0); 
-                return sprite;
-            } catch (e) {
-                console.error("Error creating text label", e);
-                return new THREE.Object3D();
-            }
-        }
 
         // --- AUDIO ENGINE ---
         class StemAudio {
@@ -276,16 +233,6 @@
 
                 this.mesh.userData = { name: fileName };
                 
-                // Add Label with safety
-                let cleanName = fileName || "Track";
-                cleanName = cleanName.replace(/\.[^/.]+$/, ""); // remove extension
-                cleanName = cleanName.replace(/^\d+\s*/, "");   // remove "0 " digits
-                cleanName = cleanName.replace(/%20/g, " ");     // remove URL encoding
-                
-                const label = createTextLabel(cleanName);
-                label.position.set(0, 0.25, 0); // Position above orb
-                this.mesh.add(label);
-
                 this.audio = new StemAudio(audioCtx, audioBuffer);
 
                 this.updatePositionFromAngle(startAngle);
@@ -375,29 +322,6 @@
             const gridHelper = new THREE.GridHelper(20, 20, 0x222222, 0x111111);
             scene.add(gridHelper);
 
-            // --- PROGRESS BAR ---
-            const barGroup = new THREE.Group();
-            // Background bar
-            const bgGeo = new THREE.PlaneGeometry(1.0, 0.05);
-            const bgMat = new THREE.MeshBasicMaterial({ color: 0x444444 });
-            const bg = new THREE.Mesh(bgGeo, bgMat);
-            
-            // Fill bar (cyan)
-            const fillGeo = new THREE.PlaneGeometry(1.0, 0.05);
-            // Translate geometry so scaling x=0 happens from left edge, not center
-            fillGeo.translate(0.5, 0, 0); 
-            const fillMat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
-            progressBarFill = new THREE.Mesh(fillGeo, fillMat);
-            progressBarFill.position.x = -0.5; // Move start to left edge
-            progressBarFill.position.z = 0.005; // Slightly in front to prevent z-fighting
-            progressBarFill.scale.x = 0; // Start empty
-
-            barGroup.add(bg, progressBarFill);
-            // Position: Low and forward (near feet area)
-            barGroup.position.set(0, 0.4, -1.2);
-            barGroup.rotation.x = -Math.PI / 6; // Angled up towards player
-            scene.add(barGroup);
-
             const controls = new OrbitControls(camera, renderer.domElement);
             controls.target.set(0, 1.3, 0);
             controls.update();
@@ -476,7 +400,6 @@
 
                     const fileName = decodeURI(path.split('/').pop());
                     
-                    // Wrap creation in try/catch to ensure one bad stem doesn't kill the app
                     try {
                         const stem = new StemEntity(i, angle, audioBuffer, fileName);
                         stems.push(stem);
@@ -523,9 +446,6 @@
                     console.log("Audio Context Resumed");
                 });
             }
-            
-            // Mark start time for progress bar
-            audioStartTime = audioCtx.currentTime;
             
             stems.forEach(s => s.startAudio());
         }
@@ -645,16 +565,6 @@
 
         function render(time) {
             stems.forEach(stem => stem.update(time / 1000));
-
-            // Progress Bar Update
-            if (progressBarFill && stems.length > 0 && stems[0].audio.buffer) {
-                const duration = stems[0].audio.buffer.duration;
-                // Calculate playback progress
-                const elapsed = audioCtx.currentTime - audioStartTime;
-                const progress = (elapsed % duration) / duration;
-                
-                progressBarFill.scale.x = Math.max(0, Math.min(1, progress));
-            }
 
             if (grabbedObject && grabbingController) {
                 const controllerPos = new THREE.Vector3();
