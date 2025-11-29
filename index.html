@@ -16,25 +16,20 @@
         p { max-width: 600px; line-height: 1.5; color: #ccc; margin-bottom: 30px; font-size: 14px;}
         
         .btn {
-            padding: 20px 50px; font-size: 20px; cursor: pointer;
+            padding: 20px 40px; font-size: 18px; cursor: pointer;
             background: transparent; border: 2px solid #0ff; color: #0ff;
             text-transform: uppercase; font-weight: bold; transition: all 0.3s;
             box-shadow: 0 0 15px rgba(0, 255, 255, 0.2);
             margin: 10px;
             display: inline-block;
             border-radius: 4px;
+            min-width: 200px;
         }
         .btn:hover { background: #0ff; color: #000; box-shadow: 0 0 30px rgba(0, 255, 255, 0.6); }
         .btn:disabled { border-color: #555; color: #555; cursor: default; box-shadow: none; opacity: 0.5; }
 
-        .debug-link {
-            margin-top: 20px; font-size: 12px; color: #444; text-decoration: underline; cursor: pointer;
-        }
-        .debug-link:hover { color: #888; }
+        .track-menu { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
 
-        .hidden-ui { display: none; margin-top: 10px; border-top: 1px solid #333; padding-top: 10px; }
-
-        input[type="file"] { display: none; }
         #loading-bar-container { width: 300px; height: 4px; background: #333; margin-top: 20px; display: none; }
         #loading-bar { width: 0%; height: 100%; background: #0ff; transition: width 0.2s; }
         #status-text { margin-top: 10px; color: #888; font-size: 12px; height: 20px; min-height: 20px;}
@@ -42,6 +37,19 @@
         .error-msg { color: #ff4444 !important; }
 
         #ui-layer { position: absolute; bottom: 20px; left: 20px; color: #555; font-size: 12px; pointer-events: none; }
+        
+        .github-link {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            color: #555;
+            font-size: 12px;
+            text-decoration: none;
+            pointer-events: auto;
+            transition: color 0.3s;
+            z-index: 1000;
+        }
+        .github-link:hover { color: #0ff; }
     </style>
     <!-- Import Three.js and VRButton -->
     <script type="importmap">
@@ -65,25 +73,23 @@
                 <b>Trigger/Click</b> to Grab. <b>Vertical</b> = Volume. <b>Horizontal</b> = Pan.
             </p>
 
-            <!-- Main Action: Load hosted stems -->
-            <button id="start-btn" class="btn">Start Experience</button>
+            <p style="margin-bottom: 10px; color: #0ff;">SELECT A TRACK TO BEGIN:</p>
+            
+            <div class="track-menu">
+                <button id="btn-jazz" class="btn">Jazz Session</button>
+                <button id="btn-orch" class="btn">Orchestral</button>
+            </div>
 
             <!-- Status -->
             <div id="loading-bar-container"><div id="loading-bar"></div></div>
             <div id="status-text"></div>
-
-            <!-- Debug / Fallback -->
-            <div class="debug-link" id="toggle-debug">Having trouble? Upload files manually</div>
-            
-            <div class="hidden-ui" id="manual-upload-ui">
-                <label for="stem-input" style="color: #888; cursor: pointer; border: 1px solid #444; padding: 5px 10px; font-size: 12px;">Choose Local Files</label>
-                <input type="file" id="stem-input" multiple accept="audio/*">
-            </div>
         </div>
         
         <div id="vr-btn-container" style="display:none; margin-top: 20px;">
             <!-- VR Button injected here -->
         </div>
+
+        <a href="https://github.com/thegoodirs/vr-jukebox-stems" target="_blank" class="github-link">View on GitHub</a>
     </div>
     
     <div id="ui-layer">Audio Engine: Web Audio | Spatial: HRTF</div>
@@ -103,18 +109,27 @@
             colors: [0xff0055, 0x00ffaa, 0x00aaff, 0xffaa00, 0xaa00ff, 0xffff00, 0xffffff] 
         };
 
-        // --- HOSTED STEMS CONFIGURATION ---
-        // Files are assumed to be in a "stems" folder relative to this index.html
-        // Using %20 for spaces ensures URL safety
-        const HOSTED_STEMS = [
-            'stems/0%20Drums.mp3',
-            'stems/1%20Keyboard.mp3',
-            'stems/2%20Percussion.mp3',
-            'stems/3%20Strings.mp3',
-            'stems/4%20Synth.mp3',
-            'stems/5%20Brass.mp3',
-            'stems/6%20Woodwinds.mp3'
-        ];
+        // --- TRACK CONFIGURATION ---
+        const TRACKS = {
+            jazz: [
+                'stems/jazz/0%20Drums.mp3',
+                'stems/jazz/1%20Keyboard.mp3',
+                'stems/jazz/2%20Percussion.mp3',
+                'stems/jazz/3%20Strings.mp3',
+                'stems/jazz/4%20Synth.mp3',
+                'stems/jazz/5%20Brass.mp3',
+                'stems/jazz/6%20Woodwinds.mp3'
+            ],
+            orchestral: [
+                'stems/orchestral/0%20Drums.mp3',
+                'stems/orchestral/1%20Keyboard.mp3',
+                'stems/orchestral/2%20Percussion.mp3',
+                'stems/orchestral/3%20Strings.mp3',
+                'stems/orchestral/4%20Synth.mp3',
+                'stems/orchestral/5%20Brass.mp3',
+                'stems/orchestral/6%20Woodwinds.mp3'
+            ]
+        };
 
         // --- GLOBAL STATE ---
         let scene, camera, renderer;
@@ -295,12 +310,9 @@
             raycaster = new THREE.Raycaster();
 
             // Event Listeners
-            document.getElementById('stem-input').addEventListener('change', handleFileSelect);
-            document.getElementById('start-btn').addEventListener('click', loadHostedStems);
-            document.getElementById('toggle-debug').addEventListener('click', () => {
-                document.getElementById('manual-upload-ui').style.display = 'block';
-                document.getElementById('toggle-debug').style.display = 'none';
-            });
+            document.getElementById('btn-jazz').addEventListener('click', () => loadTrack('jazz'));
+            document.getElementById('btn-orch').addEventListener('click', () => loadTrack('orchestral'));
+
             window.addEventListener('resize', onWindowResize);
             
             window.addEventListener('mousedown', onMouseDown);
@@ -312,267 +324,11 @@
 
         function toggleUI(loading) {
             const btns = document.querySelectorAll('.btn');
-            const inputs = document.querySelectorAll('input');
             btns.forEach(b => b.disabled = loading);
-            inputs.forEach(i => i.disabled = loading);
             document.getElementById('loading-bar-container').style.display = loading ? 'block' : 'none';
             if(!loading) {
                 document.getElementById('setup-panel').style.display = 'none';
-                document.getElementById('start-btn').style.display = 'none';
             }
         }
 
         // --- LOADERS ---
-
-        async function loadHostedStems() {
-            initAudioContext();
-            const statusText = document.getElementById('status-text');
-            const loadingBar = document.getElementById('loading-bar');
-            
-            // ENVIRONMENT CHECK
-            // If running in a blob (LLM preview) or strictly local file without server, we can't fetch relative paths.
-            if (window.location.protocol === 'blob:' || window.location.href.includes('usercontent')) {
-                statusText.classList.add('error-msg');
-                statusText.innerHTML = "<b>⚠️ PREVIEW MODE ERROR:</b><br>Cannot load stems in this preview window.<br>Please deploy code + stems folder to GitHub Pages.";
-                // Auto-show fallback
-                document.getElementById('manual-upload-ui').style.display = 'block';
-                return; 
-            }
-
-            toggleUI(true);
-            stems = [];
-            let loadedCount = 0;
-            const use360 = HOSTED_STEMS.length > 5;
-
-            for (let i = 0; i < HOSTED_STEMS.length; i++) {
-                const path = HOSTED_STEMS[i];
-                statusText.innerText = `Loading ${path.replace('stems/', '')}...`;
-                
-                try {
-                    const response = await fetch(path);
-                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                    
-                    const arrayBuffer = await response.arrayBuffer();
-                    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-                    
-                    let angle;
-                    if (use360) {
-                        angle = (i / HOSTED_STEMS.length) * Math.PI * 2;
-                    } else {
-                         angle = ((i / (HOSTED_STEMS.length - 1)) - 0.5) * 2.0; 
-                    }
-
-                    // Decode URI back for display name (remove %20)
-                    const fileName = decodeURI(path.split('/').pop());
-                    const stem = new StemEntity(i, angle, audioBuffer, fileName);
-                    stems.push(stem);
-                } catch (e) {
-                    console.error("Error loading stem", e);
-                    statusText.innerText = `Failed to load ${path}.`;
-                }
-
-                loadedCount++;
-                loadingBar.style.width = `${(loadedCount / HOSTED_STEMS.length) * 100}%`;
-            }
-
-            if (stems.length > 0) {
-                statusText.innerText = "Ready!";
-                toggleUI(false);
-                readyToPlay();
-            } else {
-                toggleUI(false);
-                statusText.classList.add('error-msg');
-                statusText.innerText = "Error: Stems not found. Ensure '/stems' folder exists.";
-                // Re-enable button
-                document.getElementById('start-btn').disabled = false;
-                document.getElementById('start-btn').style.display = 'inline-block';
-            }
-        }
-
-        async function handleFileSelect(event) {
-            const files = event.target.files;
-            if (!files.length) return;
-
-            initAudioContext();
-            toggleUI(true);
-            const loadingBar = document.getElementById('loading-bar');
-            const statusText = document.getElementById('status-text');
-            statusText.classList.remove('error-msg');
-            
-            let loadedCount = 0;
-            stems = [];
-            const use360 = files.length > 5;
-
-            for (let i = 0; i < files.length; i++) {
-                const file = files[i];
-                statusText.innerText = `Processing ${file.name}...`;
-                
-                try {
-                    const arrayBuffer = await file.arrayBuffer();
-                    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-                    
-                    let angle;
-                    if (use360) {
-                        angle = (i / files.length) * Math.PI * 2;
-                    } else {
-                         angle = ((i / (files.length - 1)) - 0.5) * 2.0; 
-                    }
-
-                    const stem = new StemEntity(i, angle, audioBuffer, file.name);
-                    stems.push(stem);
-                } catch (e) {
-                    console.error("Error decoding audio", e);
-                }
-                loadedCount++;
-                loadingBar.style.width = `${(loadedCount / files.length) * 100}%`;
-            }
-
-            statusText.innerText = "Files loaded!";
-            toggleUI(false);
-            readyToPlay();
-        }
-
-        function initAudioContext() {
-            if (!audioCtx) {
-                const AudioContext = window.AudioContext || window.webkitAudioContext;
-                audioCtx = new AudioContext();
-            }
-        }
-
-        function readyToPlay() {
-            document.getElementById('overlay').innerHTML = "<h1>READY</h1><p>Put on your headset.</p>";
-            document.getElementById('overlay').appendChild(VRButton.createButton(renderer));
-            if (audioCtx.state === 'suspended') audioCtx.resume();
-            stems.forEach(s => s.startAudio());
-        }
-
-        // --- CONTROLLERS & INTERACTION ---
-
-        function buildControllers() {
-            const controllerModelFactory = new XRControllerModelFactory();
-            const result = [];
-            for (let i = 0; i < 2; i++) {
-                const controller = renderer.xr.getController(i);
-                
-                const geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)]);
-                const line = new THREE.Line(geometry);
-                line.name = 'line'; line.scale.z = 5;
-                controller.add(line);
-                
-                controller.addEventListener('selectstart', onSelectStart);
-                controller.addEventListener('selectend', onSelectEnd);
-                scene.add(controller);
-                
-                const grip = renderer.xr.getControllerGrip(i);
-                grip.add(controllerModelFactory.createControllerModel(grip));
-                scene.add(grip);
-                result.push(controller);
-            }
-            return result;
-        }
-
-        function onSelectStart(event) {
-            const controller = event.target;
-            const intersections = getIntersections(controller);
-            if (intersections.length > 0) {
-                const object = intersections[0].object;
-                const stem = stems.find(s => s.mesh === object || s.mesh === object.parent);
-                if (stem) {
-                    grabbedObject = stem;
-                    grabbingController = controller;
-                    controller.attach(stem.mesh); 
-                    controller.remove(stem.mesh);
-                    scene.add(stem.mesh);
-                    stem.material.color.setHex(0xffffff); 
-                }
-            }
-        }
-
-        function onSelectEnd() {
-            if (grabbedObject) {
-                const originalColor = CONFIG.colors[grabbedObject.index % CONFIG.colors.length];
-                grabbedObject.material.color.setHex(originalColor);
-                grabbedObject = null;
-                grabbingController = null;
-            }
-        }
-
-        function getIntersections(controller) {
-            const tempMatrix = new THREE.Matrix4();
-            tempMatrix.identity().extractRotation(controller.matrixWorld);
-            raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
-            raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
-            return raycaster.intersectObjects(stems.map(s => s.mesh), true);
-        }
-
-        function onMouseDown(e) {
-            if (renderer.xr.isPresenting) return;
-            isMouseDown = true;
-            mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-            mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-            mouseRaycaster.setFromCamera(mouse, camera);
-            const intersects = mouseRaycaster.intersectObjects(stems.map(s => s.mesh), true);
-            if (intersects.length > 0) {
-                const stem = stems.find(s => s.mesh === intersects[0].object || s.mesh === intersects[0].object.parent);
-                if (stem) {
-                    grabbedObject = stem;
-                    stem.material.color.setHex(0xffffff);
-                }
-            }
-        }
-
-        function onMouseMove(e) {
-            if (!isMouseDown || !grabbedObject || renderer.xr.isPresenting) return;
-            const x = (e.clientX / window.innerWidth) * 2 - 1;
-            const y = -(e.clientY / window.innerHeight) * 2 + 1;
-            const angle = x * (Math.PI / 1.5);
-            const height = ((y + 1) / 2) * (CONFIG.yMax - CONFIG.yMin + 0.5) + (CONFIG.yMin - 0.2);
-            updateStemState(grabbedObject, angle, height);
-        }
-
-        function onMouseUp() {
-            if (grabbedObject && !renderer.xr.isPresenting) {
-                const originalColor = CONFIG.colors[grabbedObject.index % CONFIG.colors.length];
-                grabbedObject.material.color.setHex(originalColor);
-                grabbedObject = null;
-            }
-            isMouseDown = false;
-        }
-
-        function updateStemState(stem, angle, height) {
-            const clampedHeight = Math.max(0.5, Math.min(2.5, height));
-            stem.currentY = clampedHeight;
-            stem.updatePositionFromAngle(angle);
-            stem.updateVolumeFromHeight();
-        }
-
-        function render(time) {
-            stems.forEach(stem => stem.update(time / 1000));
-
-            if (grabbedObject && grabbingController) {
-                const controllerPos = new THREE.Vector3();
-                grabbingController.getWorldPosition(controllerPos);
-                const angle = Math.atan2(controllerPos.x, -controllerPos.z); 
-                updateStemState(grabbedObject, angle, controllerPos.y);
-            }
-
-            if (!grabbedObject) {
-                if (intersectedObject) intersectedObject = null;
-                controllers.forEach(c => {
-                    const hits = getIntersections(c);
-                    if (hits.length > 0) intersectedObject = hits[0].object;
-                });
-            }
-            renderer.render(scene, camera);
-        }
-
-        function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        }
-
-        init();
-    </script>
-</body>
-</html>
