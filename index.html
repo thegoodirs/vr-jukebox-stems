@@ -110,15 +110,14 @@
         };
 
         // --- TRACK CONFIGURATION ---
+        // Updated to match specific repo filenames with URL encoding for spaces
         const TRACKS = {
             jazz: [
                 'stems/jazz/0%20Drums.mp3',
-                'stems/jazz/1%20Keyboard.mp3',
-                'stems/jazz/2%20Percussion.mp3',
-                'stems/jazz/3%20Strings.mp3',
-                'stems/jazz/4%20Synth.mp3',
-                'stems/jazz/5%20Brass.mp3',
-                'stems/jazz/6%20Woodwinds.mp3'
+                'stems/jazz/1%20Bass.mp3',
+                'stems/jazz/2%20Keyboard.mp3',
+                'stems/jazz/3%20Synth.mp3',
+                'stems/jazz/4%20Woodwinds.mp3'
             ],
             orchestral: [
                 'stems/orchestral/0%20Drums.mp3',
@@ -332,3 +331,211 @@
         }
 
         // --- LOADERS ---
+
+        async function loadTrack(trackKey) {
+            initAudioContext();
+            const statusText = document.getElementById('status-text');
+            const loadingBar = document.getElementById('loading-bar');
+            
+            // ENVIRONMENT CHECK
+            if (window.location.protocol === 'blob:' || window.location.href.includes('usercontent')) {
+                statusText.classList.add('error-msg');
+                statusText.innerHTML = "<b>⚠️ PREVIEW MODE ERROR:</b><br>Cannot load stems in this preview.<br>Please deploy to GitHub Pages.";
+                return; 
+            }
+
+            const fileList = TRACKS[trackKey];
+            if (!fileList) return;
+
+            toggleUI(true);
+            stems = [];
+            let loadedCount = 0;
+            const use360 = fileList.length > 5;
+
+            for (let i = 0; i < fileList.length; i++) {
+                const path = fileList[i];
+                statusText.innerText = `Loading ${path.split('/').pop().replace(/%20/g, ' ')}...`;
+                
+                try {
+                    const response = await fetch(path);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    
+                    const arrayBuffer = await response.arrayBuffer();
+                    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                    
+                    let angle;
+                    if (use360) {
+                        angle = (i / fileList.length) * Math.PI * 2;
+                    } else {
+                         angle = ((i / (fileList.length - 1)) - 0.5) * 2.0; 
+                    }
+
+                    const fileName = decodeURI(path.split('/').pop());
+                    const stem = new StemEntity(i, angle, audioBuffer, fileName);
+                    stems.push(stem);
+                } catch (e) {
+                    console.error("Error loading stem", e);
+                    statusText.innerText = `Failed to load ${path}.`;
+                }
+
+                loadedCount++;
+                loadingBar.style.width = `${(loadedCount / fileList.length) * 100}%`;
+            }
+
+            if (stems.length > 0) {
+                statusText.innerText = "Ready!";
+                toggleUI(false);
+                readyToPlay();
+            } else {
+                toggleUI(false);
+                statusText.classList.add('error-msg');
+                statusText.innerText = `Error: Stems not found in /stems/${trackKey}/`;
+                // Re-enable buttons
+                document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+            }
+        }
+
+        function initAudioContext() {
+            if (!audioCtx) {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                audioCtx = new AudioContext();
+            }
+        }
+
+        function readyToPlay() {
+            document.getElementById('overlay').innerHTML = "<h1>READY</h1><p>Put on your headset.</p>";
+            document.getElementById('overlay').appendChild(VRButton.createButton(renderer));
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            stems.forEach(s => s.startAudio());
+        }
+
+        // --- CONTROLLERS & INTERACTION ---
+
+        function buildControllers() {
+            const controllerModelFactory = new XRControllerModelFactory();
+            const result = [];
+            for (let i = 0; i < 2; i++) {
+                const controller = renderer.xr.getController(i);
+                
+                const geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)]);
+                const line = new THREE.Line(geometry);
+                line.name = 'line'; line.scale.z = 5;
+                controller.add(line);
+                
+                controller.addEventListener('selectstart', onSelectStart);
+                controller.addEventListener('selectend', onSelectEnd);
+                scene.add(controller);
+                
+                const grip = renderer.xr.getControllerGrip(i);
+                grip.add(controllerModelFactory.createControllerModel(grip));
+                scene.add(grip);
+                result.push(controller);
+            }
+            return result;
+        }
+
+        function onSelectStart(event) {
+            const controller = event.target;
+            const intersections = getIntersections(controller);
+            if (intersections.length > 0) {
+                const object = intersections[0].object;
+                const stem = stems.find(s => s.mesh === object || s.mesh === object.parent);
+                if (stem) {
+                    grabbedObject = stem;
+                    grabbingController = controller;
+                    controller.attach(stem.mesh); 
+                    controller.remove(stem.mesh);
+                    scene.add(stem.mesh);
+                    stem.material.color.setHex(0xffffff); 
+                }
+            }
+        }
+
+        function onSelectEnd() {
+            if (grabbedObject) {
+                const originalColor = CONFIG.colors[grabbedObject.index % CONFIG.colors.length];
+                grabbedObject.material.color.setHex(originalColor);
+                grabbedObject = null;
+                grabbingController = null;
+            }
+        }
+
+        function getIntersections(controller) {
+            const tempMatrix = new THREE.Matrix4();
+            tempMatrix.identity().extractRotation(controller.matrixWorld);
+            raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+            raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+            return raycaster.intersectObjects(stems.map(s => s.mesh), true);
+        }
+
+        function onMouseDown(e) {
+            if (renderer.xr.isPresenting) return;
+            isMouseDown = true;
+            mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+            mouseRaycaster.setFromCamera(mouse, camera);
+            const intersects = mouseRaycaster.intersectObjects(stems.map(s => s.mesh), true);
+            if (intersects.length > 0) {
+                const stem = stems.find(s => s.mesh === intersects[0].object || s.mesh === intersects[0].object.parent);
+                if (stem) {
+                    grabbedObject = stem;
+                    stem.material.color.setHex(0xffffff);
+                }
+            }
+        }
+
+        function onMouseMove(e) {
+            if (!isMouseDown || !grabbedObject || renderer.xr.isPresenting) return;
+            const x = (e.clientX / window.innerWidth) * 2 - 1;
+            const y = -(e.clientY / window.innerHeight) * 2 + 1;
+            const angle = x * (Math.PI / 1.5);
+            const height = ((y + 1) / 2) * (CONFIG.yMax - CONFIG.yMin + 0.5) + (CONFIG.yMin - 0.2);
+            updateStemState(grabbedObject, angle, height);
+        }
+
+        function onMouseUp() {
+            if (grabbedObject && !renderer.xr.isPresenting) {
+                const originalColor = CONFIG.colors[grabbedObject.index % CONFIG.colors.length];
+                grabbedObject.material.color.setHex(originalColor);
+                grabbedObject = null;
+            }
+            isMouseDown = false;
+        }
+
+        function updateStemState(stem, angle, height) {
+            const clampedHeight = Math.max(0.5, Math.min(2.5, height));
+            stem.currentY = clampedHeight;
+            stem.updatePositionFromAngle(angle);
+            stem.updateVolumeFromHeight();
+        }
+
+        function render(time) {
+            stems.forEach(stem => stem.update(time / 1000));
+
+            if (grabbedObject && grabbingController) {
+                const controllerPos = new THREE.Vector3();
+                grabbingController.getWorldPosition(controllerPos);
+                const angle = Math.atan2(controllerPos.x, -controllerPos.z); 
+                updateStemState(grabbedObject, angle, controllerPos.y);
+            }
+
+            if (!grabbedObject) {
+                if (intersectedObject) intersectedObject = null;
+                controllers.forEach(c => {
+                    const hits = getIntersections(c);
+                    if (hits.length > 0) intersectedObject = hits[0].object;
+                });
+            }
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        init();
+    </script>
+</body>
+</html>
