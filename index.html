@@ -411,9 +411,8 @@
             const btns = document.querySelectorAll('.btn');
             btns.forEach(b => b.disabled = loading);
             document.getElementById('loading-bar-container').style.display = loading ? 'block' : 'none';
-            if(!loading) {
-                document.getElementById('setup-panel').style.display = 'none';
-            }
+            // FIX: Removed the automatic hiding of setup-panel here.
+            // It will be hidden explicitly only when success occurs in readyToPlay()
         }
 
         async function loadTrack(trackKey) {
@@ -421,6 +420,11 @@
             const statusText = document.getElementById('status-text');
             const loadingBar = document.getElementById('loading-bar');
             
+            // Reset status
+            statusText.innerText = "Initializing...";
+            statusText.classList.remove('error-msg');
+
+            // ENVIRONMENT CHECK
             if (window.location.protocol === 'blob:' || window.location.href.includes('usercontent')) {
                 statusText.classList.add('error-msg');
                 statusText.innerHTML = "<b>⚠️ PREVIEW MODE ERROR:</b><br>Cannot load stems in this preview.<br>Please deploy to GitHub Pages.";
@@ -473,6 +477,7 @@
                 toggleUI(false);
                 statusText.classList.add('error-msg');
                 statusText.innerText = `Error: Stems not found in /stems/${trackKey}/`;
+                // Re-enable buttons
                 document.querySelectorAll('.btn').forEach(b => b.disabled = false);
             }
         }
