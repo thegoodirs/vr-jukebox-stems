@@ -16,23 +16,30 @@
         p { max-width: 600px; line-height: 1.5; color: #ccc; margin-bottom: 30px; font-size: 14px;}
         
         .btn {
-            padding: 15px 40px; font-size: 16px; cursor: pointer;
+            padding: 20px 50px; font-size: 20px; cursor: pointer;
             background: transparent; border: 2px solid #0ff; color: #0ff;
             text-transform: uppercase; font-weight: bold; transition: all 0.3s;
             box-shadow: 0 0 15px rgba(0, 255, 255, 0.2);
             margin: 10px;
             display: inline-block;
+            border-radius: 4px;
         }
         .btn:hover { background: #0ff; color: #000; box-shadow: 0 0 30px rgba(0, 255, 255, 0.6); }
         .btn:disabled { border-color: #555; color: #555; cursor: default; box-shadow: none; opacity: 0.5; }
 
-        .btn-secondary { font-size: 12px; border-color: #555; color: #888; box-shadow: none; }
-        .btn-secondary:hover { background: #333; color: #fff; box-shadow: none; }
+        .debug-link {
+            margin-top: 20px; font-size: 12px; color: #444; text-decoration: underline; cursor: pointer;
+        }
+        .debug-link:hover { color: #888; }
+
+        .hidden-ui { display: none; margin-top: 10px; border-top: 1px solid #333; padding-top: 10px; }
 
         input[type="file"] { display: none; }
         #loading-bar-container { width: 300px; height: 4px; background: #333; margin-top: 20px; display: none; }
         #loading-bar { width: 0%; height: 100%; background: #0ff; transition: width 0.2s; }
-        #status-text { margin-top: 10px; color: #888; font-size: 12px; height: 20px;}
+        #status-text { margin-top: 10px; color: #888; font-size: 12px; height: 20px; min-height: 20px;}
+        
+        .error-msg { color: #ff4444 !important; }
 
         #ui-layer { position: absolute; bottom: 20px; left: 20px; color: #555; font-size: 12px; pointer-events: none; }
     </style>
@@ -53,23 +60,26 @@
         
         <div id="setup-panel">
             <p>
-                <b>INSTRUCTIONS:</b><br>
-                Enter VR to mix the music in 3D space.<br>
+                <b>VR MIXING ENVIRONMENT</b><br>
+                Put on your headset.<br>
                 <b>Trigger/Click</b> to Grab. <b>Vertical</b> = Volume. <b>Horizontal</b> = Pan.
             </p>
 
             <!-- Main Action: Load hosted stems -->
-            <button id="start-hosted-btn" class="btn">Start Experience</button>
+            <button id="start-btn" class="btn">Start Experience</button>
 
-            <!-- Fallback: Upload Files -->
-            <div style="margin-top: 20px;">
-                <label for="stem-input" class="btn btn-secondary">Or Upload Custom Files</label>
+            <!-- Status -->
+            <div id="loading-bar-container"><div id="loading-bar"></div></div>
+            <div id="status-text"></div>
+
+            <!-- Debug / Fallback -->
+            <div class="debug-link" id="toggle-debug">Having trouble? Upload files manually</div>
+            
+            <div class="hidden-ui" id="manual-upload-ui">
+                <label for="stem-input" style="color: #888; cursor: pointer; border: 1px solid #444; padding: 5px 10px; font-size: 12px;">Choose Local Files</label>
                 <input type="file" id="stem-input" multiple accept="audio/*">
             </div>
         </div>
-
-        <div id="loading-bar-container"><div id="loading-bar"></div></div>
-        <div id="status-text"></div>
         
         <div id="vr-btn-container" style="display:none; margin-top: 20px;">
             <!-- VR Button injected here -->
@@ -94,16 +104,16 @@
         };
 
         // --- HOSTED STEMS CONFIGURATION ---
-        // These match the filenames you provided. 
-        // We assume they are in a folder named 'stems' relative to index.html
+        // Files are assumed to be in a "stems" folder relative to this index.html
+        // Using %20 for spaces ensures URL safety
         const HOSTED_STEMS = [
-            'stems/0 Drums.mp3',
-            'stems/1 Keyboard.mp3',
-            'stems/2 Percussion.mp3',
-            'stems/3 Strings.mp3',
-            'stems/4 Synth.mp3',
-            'stems/5 Brass.mp3',
-            'stems/6 Woodwinds.mp3'
+            'stems/0%20Drums.mp3',
+            'stems/1%20Keyboard.mp3',
+            'stems/2%20Percussion.mp3',
+            'stems/3%20Strings.mp3',
+            'stems/4%20Synth.mp3',
+            'stems/5%20Brass.mp3',
+            'stems/6%20Woodwinds.mp3'
         ];
 
         // --- GLOBAL STATE ---
@@ -286,7 +296,11 @@
 
             // Event Listeners
             document.getElementById('stem-input').addEventListener('change', handleFileSelect);
-            document.getElementById('start-hosted-btn').addEventListener('click', loadHostedStems);
+            document.getElementById('start-btn').addEventListener('click', loadHostedStems);
+            document.getElementById('toggle-debug').addEventListener('click', () => {
+                document.getElementById('manual-upload-ui').style.display = 'block';
+                document.getElementById('toggle-debug').style.display = 'none';
+            });
             window.addEventListener('resize', onWindowResize);
             
             window.addEventListener('mousedown', onMouseDown);
@@ -304,6 +318,7 @@
             document.getElementById('loading-bar-container').style.display = loading ? 'block' : 'none';
             if(!loading) {
                 document.getElementById('setup-panel').style.display = 'none';
+                document.getElementById('start-btn').style.display = 'none';
             }
         }
 
@@ -311,31 +326,33 @@
 
         async function loadHostedStems() {
             initAudioContext();
-            toggleUI(true);
             const statusText = document.getElementById('status-text');
             const loadingBar = document.getElementById('loading-bar');
-            stems = [];
+            
+            // ENVIRONMENT CHECK
+            // If running in a blob (LLM preview) or strictly local file without server, we can't fetch relative paths.
+            if (window.location.protocol === 'blob:' || window.location.href.includes('usercontent')) {
+                statusText.classList.add('error-msg');
+                statusText.innerHTML = "<b>⚠️ PREVIEW MODE ERROR:</b><br>Cannot load stems in this preview window.<br>Please deploy code + stems folder to GitHub Pages.";
+                // Auto-show fallback
+                document.getElementById('manual-upload-ui').style.display = 'block';
+                return; 
+            }
 
+            toggleUI(true);
+            stems = [];
             let loadedCount = 0;
             const use360 = HOSTED_STEMS.length > 5;
 
-            // Simple check to ensure we aren't trying to fetch from a null location
-            // If running on local filesystem without a server, fetch() fails.
-            if (window.location.protocol === 'file:') {
-                statusText.innerText = "Error: Cannot load stems when running as local file. Please run a local server or upload to GitHub Pages.";
-                return;
-            }
-
             for (let i = 0; i < HOSTED_STEMS.length; i++) {
                 const path = HOSTED_STEMS[i];
-                statusText.innerText = `Fetching ${path}...`;
+                statusText.innerText = `Loading ${path.replace('stems/', '')}...`;
                 
                 try {
                     const response = await fetch(path);
-                    if (!response.ok) throw new Error(`HTTP ${response.status} - File not found: ${path}`);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
                     
                     const arrayBuffer = await response.arrayBuffer();
-                    statusText.innerText = `Decoding ${path}...`;
                     const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
                     
                     let angle;
@@ -345,12 +362,13 @@
                          angle = ((i / (HOSTED_STEMS.length - 1)) - 0.5) * 2.0; 
                     }
 
-                    const fileName = path.split('/').pop();
+                    // Decode URI back for display name (remove %20)
+                    const fileName = decodeURI(path.split('/').pop());
                     const stem = new StemEntity(i, angle, audioBuffer, fileName);
                     stems.push(stem);
                 } catch (e) {
                     console.error("Error loading stem", e);
-                    statusText.innerText = `Error: ${e.message}`;
+                    statusText.innerText = `Failed to load ${path}.`;
                 }
 
                 loadedCount++;
@@ -358,13 +376,16 @@
             }
 
             if (stems.length > 0) {
-                statusText.innerText = "Loaded!";
+                statusText.innerText = "Ready!";
                 toggleUI(false);
                 readyToPlay();
             } else {
                 toggleUI(false);
-                statusText.innerText = "Failed to load stems. Are they in the /stems folder?";
-                document.getElementById('setup-panel').style.display = 'block';
+                statusText.classList.add('error-msg');
+                statusText.innerText = "Error: Stems not found. Ensure '/stems' folder exists.";
+                // Re-enable button
+                document.getElementById('start-btn').disabled = false;
+                document.getElementById('start-btn').style.display = 'inline-block';
             }
         }
 
@@ -376,6 +397,7 @@
             toggleUI(true);
             const loadingBar = document.getElementById('loading-bar');
             const statusText = document.getElementById('status-text');
+            statusText.classList.remove('error-msg');
             
             let loadedCount = 0;
             stems = [];
@@ -383,7 +405,7 @@
 
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
-                statusText.innerText = `Decoding ${file.name}...`;
+                statusText.innerText = `Processing ${file.name}...`;
                 
                 try {
                     const arrayBuffer = await file.arrayBuffer();
