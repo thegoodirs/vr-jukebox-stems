@@ -103,11 +103,10 @@
         // --- CONFIGURATION ---
         const CONFIG = {
             radius: 1.5,
-            // Increased sensitivity: Narrower range means less movement needed for full volume control
-            yMin: 1.0,  // Waist height (approx)
-            yMax: 1.4,  // Chest height (approx) - 40cm range for full volume
-            defaultHeight: 1.2, // Start at 50% volume
-            smoothing: 0.15,    // Lower = smoother but slower, Higher = snappier
+            yMin: 1.0,  
+            yMax: 1.4,  
+            defaultHeight: 1.2, 
+            smoothing: 0.15,    
             colors: [0xff0055, 0x00ffaa, 0x00aaff, 0xffaa00, 0xaa00ff, 0xffff00, 0xffffff] 
         };
 
@@ -141,6 +140,10 @@
         let intersectedObject = null;
         let grabbedObject = null;
         let grabbingController = null;
+        
+        // Grab Mechanics State
+        let grabAngleOffset = 0;
+        let grabHeightOffset = 0;
         
         let mouse = new THREE.Vector2();
         let mouseRaycaster = new THREE.Raycaster();
@@ -210,7 +213,6 @@
                 this.angle = startAngle;
                 this.currentY = CONFIG.defaultHeight;
                 
-                // Target states for smoothing
                 this.targetAngle = startAngle;
                 this.targetY = CONFIG.defaultHeight;
 
@@ -232,7 +234,6 @@
                 this.mesh.userData = { name: fileName };
                 this.audio = new StemAudio(audioCtx, audioBuffer);
 
-                // Initial Instant placement
                 this.updatePositionFromAngle(startAngle);
                 
                 scene.add(this.mesh);
@@ -244,56 +245,42 @@
 
             setTargetState(angle, height) {
                 this.targetAngle = angle;
-                
-                // Clamp Height for logic, but allow visual float
+                // Clamp Height for logic
                 const clampedH = Math.max(CONFIG.yMin - 0.2, Math.min(CONFIG.yMax + 0.2, height));
                 this.targetY = clampedH;
             }
 
             updatePositionFromAngle(angle) {
                 this.angle = angle;
-                // Ring Math
                 this.mesh.position.x = CONFIG.radius * Math.sin(angle);
                 this.mesh.position.z = -CONFIG.radius * Math.cos(angle);
                 this.mesh.position.y = this.currentY;
-                
                 this.mesh.lookAt(0, this.currentY, 0);
-                
                 if (this.audio) {
                     this.audio.setPosition(this.mesh.position.x, this.mesh.position.y, this.mesh.position.z);
                 }
             }
 
             updateVolumeFromHeight() {
-                // Map Y range to 0.0 - 1.0 Volume
                 let normalized = (this.currentY - CONFIG.yMin) / (CONFIG.yMax - CONFIG.yMin);
-                normalized = Math.max(0, Math.min(1, normalized)); // Clamp hard for volume
+                normalized = Math.max(0, Math.min(1, normalized)); 
                 
                 if (this.audio) this.audio.setVolume(normalized);
                 
-                // Visual feedback
                 this.material.opacity = 0.2 + (normalized * 0.8);
                 this.coreMaterial.opacity = normalized;
                 this.core.scale.setScalar(0.5 + normalized);
             }
 
             update(time) {
-                // 1. SMOOTHING LOGIC (Lerp)
-                // Angle Lerp (Simple lerp works fine if we don't wrap around PI/-PI boundary often, 
-                // but for a jukebox mostly in front, standard lerp is safe enough. 
-                // For full 360 safety, we'd take shortest path).
                 this.angle += (this.targetAngle - this.angle) * CONFIG.smoothing;
                 this.currentY += (this.targetY - this.currentY) * CONFIG.smoothing;
 
-                // 2. Apply updates
                 this.updatePositionFromAngle(this.angle);
                 this.updateVolumeFromHeight();
 
-                // 3. Audio Reactivity
-                // Idle rotation
                 this.mesh.rotation.z = time * 0.5;
                 this.mesh.rotation.y = time * 0.2;
-                
                 if (this.audio) {
                     const energy = this.audio.getAnalysis();
                     const scale = 1 + (energy / 255) * 0.4;
@@ -341,7 +328,6 @@
             controllers = buildControllers();
             raycaster = new THREE.Raycaster();
 
-            // Event Listeners
             document.getElementById('btn-jazz').addEventListener('click', () => loadTrack('jazz'));
             document.getElementById('btn-orch').addEventListener('click', () => loadTrack('orchestral'));
 
@@ -363,13 +349,11 @@
             }
         }
 
-        // --- LOADERS ---
-
         async function loadTrack(trackKey) {
             initAudioContext();
             const statusText = document.getElementById('status-text');
+            const loadingBar = document.getElementById('loading-bar');
             
-            // ENVIRONMENT CHECK
             if (window.location.protocol === 'blob:' || window.location.href.includes('usercontent')) {
                 statusText.classList.add('error-msg');
                 statusText.innerHTML = "<b>⚠️ PREVIEW MODE ERROR:</b><br>Cannot load stems in this preview.<br>Please deploy to GitHub Pages.";
@@ -422,7 +406,6 @@
                 toggleUI(false);
                 statusText.classList.add('error-msg');
                 statusText.innerText = `Error: Stems not found in /stems/${trackKey}/`;
-                // Re-enable buttons
                 document.querySelectorAll('.btn').forEach(b => b.disabled = false);
             }
         }
@@ -440,8 +423,6 @@
             if (audioCtx.state === 'suspended') audioCtx.resume();
             stems.forEach(s => s.startAudio());
         }
-
-        // --- CONTROLLERS & INTERACTION ---
 
         function buildControllers() {
             const controllerModelFactory = new XRControllerModelFactory();
@@ -475,6 +456,21 @@
                 if (stem) {
                     grabbedObject = stem;
                     grabbingController = controller;
+                    
+                    // --- OFFSET LOGIC START ---
+                    const controllerPos = new THREE.Vector3();
+                    controller.getWorldPosition(controllerPos);
+                    
+                    // Calculate controller's current angle in ring space
+                    const controllerAngle = Math.atan2(controllerPos.x, -controllerPos.z);
+                    
+                    // Store offset: StemAngle - ControllerAngle
+                    grabAngleOffset = stem.angle - controllerAngle;
+                    
+                    // Store Height Offset
+                    grabHeightOffset = stem.currentY - controllerPos.y;
+                    // --- OFFSET LOGIC END ---
+
                     controller.attach(stem.mesh); 
                     controller.remove(stem.mesh);
                     scene.add(stem.mesh);
@@ -512,6 +508,15 @@
                 if (stem) {
                     grabbedObject = stem;
                     stem.material.color.setHex(0xffffff);
+                    
+                    // Mouse Offset Calculation
+                    const mouseX = (e.clientX / window.innerWidth) * 2 - 1;
+                    const mouseY = -(e.clientY / window.innerHeight) * 2 + 1;
+                    const mouseAngle = mouseX * (Math.PI / 1.5);
+                    const mouseHeight = ((mouseY + 1) / 2) * (CONFIG.yMax - CONFIG.yMin + 0.5) + (CONFIG.yMin - 0.2);
+                    
+                    grabAngleOffset = stem.angle - mouseAngle;
+                    grabHeightOffset = stem.currentY - mouseHeight;
                 }
             }
         }
@@ -519,15 +524,15 @@
         function onMouseMove(e) {
             if (!isMouseDown || !grabbedObject || renderer.xr.isPresenting) return;
             
-            // Map Mouse X to Angle
             const x = (e.clientX / window.innerWidth) * 2 - 1;
-            const targetAngle = x * (Math.PI / 1.5);
-            
-            // Map Mouse Y to Height (Sensitive range)
             const y = -(e.clientY / window.innerHeight) * 2 + 1;
-            const targetHeight = ((y + 1) / 2) * (CONFIG.yMax - CONFIG.yMin + 0.5) + (CONFIG.yMin - 0.2);
+            
+            const rawAngle = x * (Math.PI / 1.5);
+            const targetAngle = rawAngle + grabAngleOffset;
+            
+            const rawHeight = ((y + 1) / 2) * (CONFIG.yMax - CONFIG.yMin + 0.5) + (CONFIG.yMin - 0.2);
+            const targetHeight = rawHeight + grabHeightOffset;
 
-            // Use smoothed setter
             grabbedObject.setTargetState(targetAngle, targetHeight);
         }
 
@@ -547,12 +552,14 @@
                 const controllerPos = new THREE.Vector3();
                 grabbingController.getWorldPosition(controllerPos);
                 
-                // VR: Calculate Angle
-                const targetAngle = Math.atan2(controllerPos.x, -controllerPos.z); 
+                // VR: Calculate Angle & Apply Offset
+                const rawAngle = Math.atan2(controllerPos.x, -controllerPos.z); 
+                const targetAngle = rawAngle + grabAngleOffset;
                 
-                // VR: Use controller height directly
-                // Use smoothed setter
-                grabbedObject.setTargetState(targetAngle, controllerPos.y);
+                // VR: Calculate Height & Apply Offset
+                const targetHeight = controllerPos.y + grabHeightOffset;
+                
+                grabbedObject.setTargetState(targetAngle, targetHeight);
             }
 
             if (!grabbedObject) {
