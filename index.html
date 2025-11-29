@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>VR Spatial Jukebox</title>
+    <style>
+        body { margin: 0; padding: 0; background-color: #000; overflow: hidden; font-family: 'Courier New', Courier, monospace; color: white; }
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); display: flex; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 999;
+            text-align: center; pointer-events: auto;
+        }
+        h1 { margin-bottom: 10px; text-shadow: 0 0 10px #0ff; font-size: 32px; letter-spacing: 2px;}
+        p { max-width: 600px; line-height: 1.5; color: #ccc; margin-bottom: 30px; font-size: 14px;}
+        
+        .btn {
+            padding: 15px 40px; font-size: 16px; cursor: pointer;
+            background: transparent; border: 2px solid #0ff; color: #0ff;
+            text-transform: uppercase; font-weight: bold; transition: all 0.3s;
+            box-shadow: 0 0 15px rgba(0, 255, 255, 0.2);
+            margin: 10px;
+            display: inline-block;
+        }
+        .btn:hover { background: #0ff; color: #000; box-shadow: 0 0 30px rgba(0, 255, 255, 0.6); }
+        .btn:disabled { border-color: #555; color: #555; cursor: default; box-shadow: none; opacity: 0.5; }
+
+        .btn-secondary { font-size: 12px; border-color: #555; color: #888; box-shadow: none; }
+        .btn-secondary:hover { background: #333; color: #fff; box-shadow: none; }
+
+        input[type="file"] { display: none; }
+        #loading-bar-container { width: 300px; height: 4px; background: #333; margin-top: 20px; display: none; }
+        #loading-bar { width: 0%; height: 100%; background: #0ff; transition: width 0.2s; }
+        #status-text { margin-top: 10px; color: #888; font-size: 12px; height: 20px;}
+
+        #ui-layer { position: absolute; bottom: 20px; left: 20px; color: #555; font-size: 12px; pointer-events: none; }
+    </style>
+    <!-- Import Three.js and VRButton -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="overlay">
+        <h1>SPATIAL JUKEBOX</h1>
+        
+        <div id="setup-panel">
+            <p>
+                <b>INSTRUCTIONS:</b><br>
+                Enter VR to mix the music in 3D space.<br>
+                <b>Trigger/Click</b> to Grab. <b>Vertical</b> = Volume. <b>Horizontal</b> = Pan.
+            </p>
+
+            <!-- Main Action: Load hosted stems -->
+            <button id="start-hosted-btn" class="btn">Start Experience</button>
+
+            <!-- Fallback: Upload Files -->
+            <div style="margin-top: 20px;">
+                <label for="stem-input" class="btn btn-secondary">Or Upload Custom Files</label>
+                <input type="file" id="stem-input" multiple accept="audio/*">
+            </div>
+        </div>
+
+        <div id="loading-bar-container"><div id="loading-bar"></div></div>
+        <div id="status-text"></div>
+        
+        <div id="vr-btn-container" style="display:none; margin-top: 20px;">
+            <!-- VR Button injected here -->
+        </div>
+    </div>
+    
+    <div id="ui-layer">Audio Engine: Web Audio | Spatial: HRTF</div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { VRButton } from 'three/addons/webxr/VRButton.js';
+        import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- CONFIGURATION ---
+        const CONFIG = {
+            radius: 1.5,
+            yMin: 0.8,
+            yMax: 1.8,
+            defaultHeight: 1.3,
+            colors: [0xff0055, 0x00ffaa, 0x00aaff, 0xffaa00, 0xaa00ff, 0xffff00, 0xffffff] 
+        };
+
+        // --- HOSTED STEMS CONFIGURATION ---
+        // These match the filenames you provided. 
+        // We assume they are in a folder named 'stems' relative to index.html
+        const HOSTED_STEMS = [
+            'stems/0 Drums.mp3',
+            'stems/1 Keyboard.mp3',
+            'stems/2 Percussion.mp3',
+            'stems/3 Strings.mp3',
+            'stems/4 Synth.mp3',
+            'stems/5 Brass.mp3',
+            'stems/6 Woodwinds.mp3'
+        ];
+
+        // --- GLOBAL STATE ---
+        let scene, camera, renderer;
+        let controllers = [];
+        let raycaster;
+        let stems = [];
+        let audioCtx;
+        
+        let intersectedObject = null;
+        let grabbedObject = null;
+        let grabbingController = null;
+        
+        let mouse = new THREE.Vector2();
+        let mouseRaycaster = new THREE.Raycaster();
+        let isMouseDown = false;
+
+        // --- AUDIO ENGINE ---
+        class StemAudio {
+            constructor(ctx, buffer) {
+                this.ctx = ctx;
+                this.gainNode = ctx.createGain();
+                this.analyser = ctx.createAnalyser();
+                this.analyser.fftSize = 64;
+                this.panner = ctx.createPanner();
+                
+                this.panner.panningModel = 'HRTF';
+                this.panner.distanceModel = 'inverse';
+                this.panner.refDistance = 1;
+                this.panner.maxDistance = 10000;
+                this.panner.coneInnerAngle = 360;
+
+                this.gainNode.connect(this.analyser);
+                this.analyser.connect(this.panner);
+                this.panner.connect(ctx.destination);
+                
+                this.source = null;
+                this.buffer = buffer; 
+                this.gainNode.gain.value = 0.5;
+            }
+
+            start() {
+                if (this.buffer) {
+                    this.source = this.ctx.createBufferSource();
+                    this.source.buffer = this.buffer;
+                    this.source.loop = true;
+                    this.source.connect(this.gainNode);
+                    this.source.start(0);
+                }
+            }
+            
+            setVolume(val) {
+                this.gainNode.gain.setTargetAtTime(val, this.ctx.currentTime, 0.1);
+            }
+
+            setPosition(x, y, z) {
+                if(this.panner.positionX) {
+                    this.panner.positionX.value = x;
+                    this.panner.positionY.value = y;
+                    this.panner.positionZ.value = z;
+                } else {
+                    this.panner.setPosition(x,y,z);
+                }
+            }
+
+            getAnalysis() {
+                const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+                this.analyser.getByteFrequencyData(dataArray);
+                let sum = 0;
+                for(let i=0; i<dataArray.length; i++) sum += dataArray[i];
+                return sum / dataArray.length;
+            }
+        }
+
+        // --- VISUAL ENTITY ---
+        class StemEntity {
+            constructor(index, startAngle, audioBuffer = null, fileName = "Stem") {
+                this.index = index;
+                this.angle = startAngle;
+                
+                const geometry = new THREE.IcosahedronGeometry(0.15, 1);
+                const color = CONFIG.colors[index % CONFIG.colors.length];
+                
+                this.material = new THREE.MeshBasicMaterial({ 
+                    color: color, wireframe: true, transparent: true, opacity: 0.5
+                });
+                
+                this.coreMaterial = new THREE.MeshBasicMaterial({
+                    color: 0xffffff, transparent: true, opacity: 0
+                });
+                
+                this.mesh = new THREE.Mesh(geometry, this.material);
+                this.core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.10, 1), this.coreMaterial);
+                this.mesh.add(this.core);
+
+                this.mesh.userData = { name: fileName };
+                this.audio = new StemAudio(audioCtx, audioBuffer);
+
+                this.currentY = CONFIG.defaultHeight;
+                this.updatePositionFromAngle(startAngle);
+                
+                scene.add(this.mesh);
+            }
+
+            startAudio() {
+                this.audio.start();
+            }
+
+            updatePositionFromAngle(angle) {
+                this.angle = angle;
+                this.mesh.position.x = CONFIG.radius * Math.sin(angle);
+                this.mesh.position.z = -CONFIG.radius * Math.cos(angle);
+                this.mesh.position.y = this.currentY;
+                this.mesh.lookAt(0, this.currentY, 0);
+                if (this.audio) {
+                    this.audio.setPosition(this.mesh.position.x, this.mesh.position.y, this.mesh.position.z);
+                }
+            }
+
+            updateVolumeFromHeight() {
+                let normalized = (this.currentY - CONFIG.yMin) / (CONFIG.yMax - CONFIG.yMin);
+                normalized = Math.max(0, Math.min(1, normalized));
+                
+                if (this.audio) this.audio.setVolume(normalized);
+                
+                this.material.opacity = 0.3 + (normalized * 0.7);
+                this.coreMaterial.opacity = normalized;
+                this.core.scale.setScalar(0.5 + normalized);
+            }
+
+            update(time) {
+                this.mesh.rotation.z = time * 0.5;
+                this.mesh.rotation.y = time * 0.2;
+                if (this.audio) {
+                    const energy = this.audio.getAnalysis();
+                    const scale = 1 + (energy / 255) * 0.4;
+                    this.mesh.scale.setScalar(scale);
+                }
+            }
+        }
+
+        // --- INIT ---
+
+        function init() {
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050505);
+            scene.fog = new THREE.Fog(0x050505, 2, 10);
+
+            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 50);
+            camera.position.set(0, 1.6, 3);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.xr.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
+            scene.add(light);
+            
+            const ringGeo = new THREE.RingGeometry(CONFIG.radius - 0.02, CONFIG.radius + 0.02, 64);
+            const ringMat = new THREE.MeshBasicMaterial({ color: 0x333333, side: THREE.DoubleSide });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.rotation.x = -Math.PI / 2;
+            ring.position.y = 0.01;
+            scene.add(ring);
+            
+            const gridHelper = new THREE.GridHelper(20, 20, 0x222222, 0x111111);
+            scene.add(gridHelper);
+
+            const controls = new OrbitControls(camera, renderer.domElement);
+            controls.target.set(0, 1.3, 0);
+            controls.update();
+
+            controllers = buildControllers();
+            raycaster = new THREE.Raycaster();
+
+            // Event Listeners
+            document.getElementById('stem-input').addEventListener('change', handleFileSelect);
+            document.getElementById('start-hosted-btn').addEventListener('click', loadHostedStems);
+            window.addEventListener('resize', onWindowResize);
+            
+            window.addEventListener('mousedown', onMouseDown);
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+
+            renderer.setAnimationLoop(render);
+        }
+
+        function toggleUI(loading) {
+            const btns = document.querySelectorAll('.btn');
+            const inputs = document.querySelectorAll('input');
+            btns.forEach(b => b.disabled = loading);
+            inputs.forEach(i => i.disabled = loading);
+            document.getElementById('loading-bar-container').style.display = loading ? 'block' : 'none';
+            if(!loading) {
+                document.getElementById('setup-panel').style.display = 'none';
+            }
+        }
+
+        // --- LOADERS ---
+
+        async function loadHostedStems() {
+            initAudioContext();
+            toggleUI(true);
+            const statusText = document.getElementById('status-text');
+            const loadingBar = document.getElementById('loading-bar');
+            stems = [];
+
+            let loadedCount = 0;
+            const use360 = HOSTED_STEMS.length > 5;
+
+            // Simple check to ensure we aren't trying to fetch from a null location
+            // If running on local filesystem without a server, fetch() fails.
+            if (window.location.protocol === 'file:') {
+                statusText.innerText = "Error: Cannot load stems when running as local file. Please run a local server or upload to GitHub Pages.";
+                return;
+            }
+
+            for (let i = 0; i < HOSTED_STEMS.length; i++) {
+                const path = HOSTED_STEMS[i];
+                statusText.innerText = `Fetching ${path}...`;
+                
+                try {
+                    const response = await fetch(path);
+                    if (!response.ok) throw new Error(`HTTP ${response.status} - File not found: ${path}`);
+                    
+                    const arrayBuffer = await response.arrayBuffer();
+                    statusText.innerText = `Decoding ${path}...`;
+                    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                    
+                    let angle;
+                    if (use360) {
+                        angle = (i / HOSTED_STEMS.length) * Math.PI * 2;
+                    } else {
+                         angle = ((i / (HOSTED_STEMS.length - 1)) - 0.5) * 2.0; 
+                    }
+
+                    const fileName = path.split('/').pop();
+                    const stem = new StemEntity(i, angle, audioBuffer, fileName);
+                    stems.push(stem);
+                } catch (e) {
+                    console.error("Error loading stem", e);
+                    statusText.innerText = `Error: ${e.message}`;
+                }
+
+                loadedCount++;
+                loadingBar.style.width = `${(loadedCount / HOSTED_STEMS.length) * 100}%`;
+            }
+
+            if (stems.length > 0) {
+                statusText.innerText = "Loaded!";
+                toggleUI(false);
+                readyToPlay();
+            } else {
+                toggleUI(false);
+                statusText.innerText = "Failed to load stems. Are they in the /stems folder?";
+                document.getElementById('setup-panel').style.display = 'block';
+            }
+        }
+
+        async function handleFileSelect(event) {
+            const files = event.target.files;
+            if (!files.length) return;
+
+            initAudioContext();
+            toggleUI(true);
+            const loadingBar = document.getElementById('loading-bar');
+            const statusText = document.getElementById('status-text');
+            
+            let loadedCount = 0;
+            stems = [];
+            const use360 = files.length > 5;
+
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                statusText.innerText = `Decoding ${file.name}...`;
+                
+                try {
+                    const arrayBuffer = await file.arrayBuffer();
+                    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                    
+                    let angle;
+                    if (use360) {
+                        angle = (i / files.length) * Math.PI * 2;
+                    } else {
+                         angle = ((i / (files.length - 1)) - 0.5) * 2.0; 
+                    }
+
+                    const stem = new StemEntity(i, angle, audioBuffer, file.name);
+                    stems.push(stem);
+                } catch (e) {
+                    console.error("Error decoding audio", e);
+                }
+                loadedCount++;
+                loadingBar.style.width = `${(loadedCount / files.length) * 100}%`;
+            }
+
+            statusText.innerText = "Files loaded!";
+            toggleUI(false);
+            readyToPlay();
+        }
+
+        function initAudioContext() {
+            if (!audioCtx) {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                audioCtx = new AudioContext();
+            }
+        }
+
+        function readyToPlay() {
+            document.getElementById('overlay').innerHTML = "<h1>READY</h1><p>Put on your headset.</p>";
+            document.getElementById('overlay').appendChild(VRButton.createButton(renderer));
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            stems.forEach(s => s.startAudio());
+        }
+
+        // --- CONTROLLERS & INTERACTION ---
+
+        function buildControllers() {
+            const controllerModelFactory = new XRControllerModelFactory();
+            const result = [];
+            for (let i = 0; i < 2; i++) {
+                const controller = renderer.xr.getController(i);
+                
+                const geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)]);
+                const line = new THREE.Line(geometry);
+                line.name = 'line'; line.scale.z = 5;
+                controller.add(line);
+                
+                controller.addEventListener('selectstart', onSelectStart);
+                controller.addEventListener('selectend', onSelectEnd);
+                scene.add(controller);
+                
+                const grip = renderer.xr.getControllerGrip(i);
+                grip.add(controllerModelFactory.createControllerModel(grip));
+                scene.add(grip);
+                result.push(controller);
+            }
+            return result;
+        }
+
+        function onSelectStart(event) {
+            const controller = event.target;
+            const intersections = getIntersections(controller);
+            if (intersections.length > 0) {
+                const object = intersections[0].object;
+                const stem = stems.find(s => s.mesh === object || s.mesh === object.parent);
+                if (stem) {
+                    grabbedObject = stem;
+                    grabbingController = controller;
+                    controller.attach(stem.mesh); 
+                    controller.remove(stem.mesh);
+                    scene.add(stem.mesh);
+                    stem.material.color.setHex(0xffffff); 
+                }
+            }
+        }
+
+        function onSelectEnd() {
+            if (grabbedObject) {
+                const originalColor = CONFIG.colors[grabbedObject.index % CONFIG.colors.length];
+                grabbedObject.material.color.setHex(originalColor);
+                grabbedObject = null;
+                grabbingController = null;
+            }
+        }
+
+        function getIntersections(controller) {
+            const tempMatrix = new THREE.Matrix4();
+            tempMatrix.identity().extractRotation(controller.matrixWorld);
+            raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+            raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+            return raycaster.intersectObjects(stems.map(s => s.mesh), true);
+        }
+
+        function onMouseDown(e) {
+            if (renderer.xr.isPresenting) return;
+            isMouseDown = true;
+            mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+            mouseRaycaster.setFromCamera(mouse, camera);
+            const intersects = mouseRaycaster.intersectObjects(stems.map(s => s.mesh), true);
+            if (intersects.length > 0) {
+                const stem = stems.find(s => s.mesh === intersects[0].object || s.mesh === intersects[0].object.parent);
+                if (stem) {
+                    grabbedObject = stem;
+                    stem.material.color.setHex(0xffffff);
+                }
+            }
+        }
+
+        function onMouseMove(e) {
+            if (!isMouseDown || !grabbedObject || renderer.xr.isPresenting) return;
+            const x = (e.clientX / window.innerWidth) * 2 - 1;
+            const y = -(e.clientY / window.innerHeight) * 2 + 1;
+            const angle = x * (Math.PI / 1.5);
+            const height = ((y + 1) / 2) * (CONFIG.yMax - CONFIG.yMin + 0.5) + (CONFIG.yMin - 0.2);
+            updateStemState(grabbedObject, angle, height);
+        }
+
+        function onMouseUp() {
+            if (grabbedObject && !renderer.xr.isPresenting) {
+                const originalColor = CONFIG.colors[grabbedObject.index % CONFIG.colors.length];
+                grabbedObject.material.color.setHex(originalColor);
+                grabbedObject = null;
+            }
+            isMouseDown = false;
+        }
+
+        function updateStemState(stem, angle, height) {
+            const clampedHeight = Math.max(0.5, Math.min(2.5, height));
+            stem.currentY = clampedHeight;
+            stem.updatePositionFromAngle(angle);
+            stem.updateVolumeFromHeight();
+        }
+
+        function render(time) {
+            stems.forEach(stem => stem.update(time / 1000));
+
+            if (grabbedObject && grabbingController) {
+                const controllerPos = new THREE.Vector3();
+                grabbingController.getWorldPosition(controllerPos);
+                const angle = Math.atan2(controllerPos.x, -controllerPos.z); 
+                updateStemState(grabbedObject, angle, controllerPos.y);
+            }
+
+            if (!grabbedObject) {
+                if (intersectedObject) intersectedObject = null;
+                controllers.forEach(c => {
+                    const hits = getIntersections(c);
+                    if (hits.length > 0) intersectedObject = hits[0].object;
+                });
+            }
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        init();
+    </script>
+</body>
+</html>
