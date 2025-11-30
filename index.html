@@ -51,7 +51,7 @@
         }
         .github-link:hover { color: #0ff; }
     </style>
-    <!-- Import Three.js and VRButton -->
+    <!-- Import Three.js, VRButton, and Text Utils -->
     <script type="importmap">
         {
             "imports": {
@@ -99,6 +99,8 @@
         import { VRButton } from 'three/addons/webxr/VRButton.js';
         import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+        import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
 
         // --- CONFIGURATION ---
         const CONFIG = {
@@ -140,14 +142,33 @@
         let intersectedObject = null;
         let grabbedObject = null;
         let grabbingController = null;
+        let loadedFont = null;
         
         // Grab Mechanics State
         let grabAngleOffset = 0;
         let grabHeightOffset = 0;
         
+        let audioStartTime = 0;
+        
         let mouse = new THREE.Vector2();
         let mouseRaycaster = new THREE.Raycaster();
         let isMouseDown = false;
+
+        // --- HELPER: GENERATE GLOW TEXTURE ---
+        function createGlowTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32; canvas.height = 32;
+            const ctx = canvas.getContext('2d');
+            const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+            grad.addColorStop(0, 'rgba(255,255,255,1)');
+            grad.addColorStop(0.2, 'rgba(255,255,255,0.8)');
+            grad.addColorStop(0.5, 'rgba(255,255,255,0.2)');
+            grad.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 32, 32);
+            return new THREE.CanvasTexture(canvas);
+        }
+        const glowTexture = createGlowTexture();
 
         // --- AUDIO ENGINE ---
         class StemAudio {
@@ -216,25 +237,83 @@
                 this.targetAngle = startAngle;
                 this.targetY = CONFIG.defaultHeight;
 
+                const baseColor = CONFIG.colors[index % CONFIG.colors.length];
+                
+                // ORB
                 const geometry = new THREE.IcosahedronGeometry(0.15, 1);
-                const color = CONFIG.colors[index % CONFIG.colors.length];
-                
                 this.material = new THREE.MeshBasicMaterial({ 
-                    color: color, wireframe: true, transparent: true, opacity: 0.5
+                    color: baseColor, wireframe: true, transparent: true, opacity: 0.5
                 });
-                
                 this.coreMaterial = new THREE.MeshBasicMaterial({
                     color: 0xffffff, transparent: true, opacity: 0
                 });
-                
                 this.mesh = new THREE.Mesh(geometry, this.material);
                 this.core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.10, 1), this.coreMaterial);
                 this.mesh.add(this.core);
-
                 this.mesh.userData = { name: fileName };
-                
-                this.audio = new StemAudio(audioCtx, audioBuffer);
 
+                // CLEAN NAME FOR LABEL
+                let cleanName = fileName || "Track";
+                cleanName = cleanName.replace(/\.[^/.]+$/, ""); // remove extension
+                cleanName = cleanName.replace(/^\d+\s*/, "");   // remove "0 " digits
+                cleanName = cleanName.replace(/%20/g, " ");     // remove URL encoding
+
+                // FEATURE 1: 3D LABELS
+                try {
+                    if (loadedFont) {
+                        const textGeo = new TextGeometry(cleanName, {
+                            font: loadedFont,
+                            size: 0.06,
+                            height: 0.01,
+                        });
+                        textGeo.computeBoundingBox();
+                        const centerOffset = -0.5 * (textGeo.boundingBox.max.x - textGeo.boundingBox.min.x);
+                        textGeo.translate(centerOffset, 0, 0); // Center text
+                        
+                        const textMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+                        this.labelMesh = new THREE.Mesh(textGeo, textMat);
+                        this.labelMesh.position.y = 0.25; // Above orb
+                        this.mesh.add(this.labelMesh);
+                    }
+                } catch(e) {
+                    console.warn("Label creation failed", e);
+                }
+
+                // FEATURE 2: AURORA EFFECT
+                try {
+                    const particleCount = 60;
+                    const particles = new THREE.BufferGeometry();
+                    const pPos = [];
+                    const pSizes = [];
+                    
+                    for(let i=0; i<particleCount; i++) {
+                        // Random spread around orb
+                        const x = (Math.random() - 0.5) * 0.8;
+                        const y = (Math.random() - 0.5) * 0.8;
+                        const z = (Math.random() - 0.5) * 0.8;
+                        pPos.push(x, y, z);
+                        pSizes.push(Math.random());
+                    }
+                    particles.setAttribute('position', new THREE.Float32BufferAttribute(pPos, 3));
+                    particles.setAttribute('size', new THREE.Float32BufferAttribute(pSizes, 1));
+                    
+                    const pMat = new THREE.PointsMaterial({
+                        color: baseColor,
+                        size: 0.05,
+                        map: glowTexture,
+                        transparent: true,
+                        opacity: 0.0, // Start invisible
+                        blending: THREE.AdditiveBlending,
+                        depthWrite: false
+                    });
+                    
+                    this.aurora = new THREE.Points(particles, pMat);
+                    this.mesh.add(this.aurora);
+                } catch(e) {
+                    console.warn("Aurora creation failed", e);
+                }
+
+                this.audio = new StemAudio(audioCtx, audioBuffer);
                 this.updatePositionFromAngle(startAngle);
                 
                 scene.add(this.mesh);
@@ -246,7 +325,6 @@
 
             setTargetState(angle, height) {
                 this.targetAngle = angle;
-                // Clamp Height for logic
                 const clampedH = Math.max(CONFIG.yMin - 0.2, Math.min(CONFIG.yMax + 0.2, height));
                 this.targetY = clampedH;
             }
@@ -256,7 +334,22 @@
                 this.mesh.position.x = CONFIG.radius * Math.sin(angle);
                 this.mesh.position.z = -CONFIG.radius * Math.cos(angle);
                 this.mesh.position.y = this.currentY;
+                
+                // Orient orb to center
                 this.mesh.lookAt(0, this.currentY, 0);
+                
+                // Keep label facing camera
+                if (this.labelMesh) {
+                    // World rotation reset for billboard effect
+                    this.labelMesh.quaternion.copy(camera.quaternion);
+                    // Adjust to be upright
+                    // Actually, simple lookAt works better if child
+                    // Since it's child of orb, we need to counter orb rotation
+                    // Simplified: We'll update world rotation in render loop or just leave it attached for now
+                    // Just basic Billboard for now:
+                    this.labelMesh.lookAt(camera.position);
+                }
+
                 if (this.audio) {
                     this.audio.setPosition(this.mesh.position.x, this.mesh.position.y, this.mesh.position.z);
                 }
@@ -271,6 +364,16 @@
                 this.material.opacity = 0.2 + (normalized * 0.8);
                 this.coreMaterial.opacity = normalized;
                 this.core.scale.setScalar(0.5 + normalized);
+
+                // Update Aurora based on volume
+                if (this.aurora) {
+                    this.aurora.material.opacity = normalized * 0.6; // Max opacity 0.6
+                    this.aurora.scale.setScalar(1 + normalized * 0.5); // Grow with volume
+                    
+                    // Spin aurora
+                    this.aurora.rotation.y += 0.005 + (normalized * 0.02);
+                    this.aurora.rotation.z += 0.002;
+                }
             }
 
             update(time) {
@@ -329,6 +432,14 @@
             controllers = buildControllers();
             raycaster = new THREE.Raycaster();
 
+            // PRELOAD FONT
+            const loader = new FontLoader();
+            // Using standard helvetiker from three examples
+            loader.load('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/fonts/helvetiker_regular.typeface.json', function (response) {
+                loadedFont = response;
+                console.log("Font loaded");
+            });
+
             document.getElementById('btn-jazz').addEventListener('click', () => loadTrack('jazz'));
             document.getElementById('btn-orch').addEventListener('click', () => loadTrack('orchestral'));
 
@@ -356,7 +467,6 @@
             const statusText = document.getElementById('status-text');
             const loadingBar = document.getElementById('loading-bar');
             
-            // Reset status
             statusText.innerText = "Initializing...";
             statusText.classList.remove('error-msg');
 
@@ -424,7 +534,6 @@
                 toggleUI(false);
                 statusText.classList.add('error-msg');
                 statusText.innerText = `Error: Stems not found in /stems/${trackKey}/`;
-                // Re-enable buttons
                 document.querySelectorAll('.btn').forEach(b => b.disabled = false);
             }
         }
