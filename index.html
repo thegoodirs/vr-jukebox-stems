@@ -139,7 +139,6 @@
         let stems = [];
         let audioCtx;
         
-        let intersectedObject = null;
         let grabbedObject = null;
         let grabbingController = null;
         let loadedFont = null;
@@ -236,6 +235,8 @@
                 
                 this.targetAngle = startAngle;
                 this.targetY = CONFIG.defaultHeight;
+                
+                this.isHighlighted = false;
 
                 const baseColor = CONFIG.colors[index % CONFIG.colors.length];
                 
@@ -250,7 +251,7 @@
                 this.mesh = new THREE.Mesh(geometry, this.material);
                 this.core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.10, 1), this.coreMaterial);
                 this.mesh.add(this.core);
-                this.mesh.userData = { name: fileName };
+                this.mesh.userData = { name: fileName, entity: this };
 
                 // CLEAN NAME FOR LABEL
                 let cleanName = fileName || "Track";
@@ -287,7 +288,6 @@
                     const pSizes = [];
                     
                     for(let i=0; i<particleCount; i++) {
-                        // Random spread around orb
                         const x = (Math.random() - 0.5) * 0.8;
                         const y = (Math.random() - 0.5) * 0.8;
                         const z = (Math.random() - 0.5) * 0.8;
@@ -302,7 +302,7 @@
                         size: 0.05,
                         map: glowTexture,
                         transparent: true,
-                        opacity: 0.0, // Start invisible
+                        opacity: 0.0, 
                         blending: THREE.AdditiveBlending,
                         depthWrite: false
                     });
@@ -328,6 +328,27 @@
                 const clampedH = Math.max(CONFIG.yMin - 0.2, Math.min(CONFIG.yMax + 0.2, height));
                 this.targetY = clampedH;
             }
+            
+            highlight() {
+                if (this.isHighlighted) return;
+                this.isHighlighted = true;
+                // Brighten material
+                this.material.color.setHex(0xffffff);
+                this.material.opacity = 0.9;
+                // Scale up slightly
+                this.mesh.scale.setScalar(1.2);
+            }
+            
+            unhighlight() {
+                if (!this.isHighlighted) return;
+                this.isHighlighted = false;
+                // Reset color
+                const baseColor = CONFIG.colors[this.index % CONFIG.colors.length];
+                this.material.color.setHex(baseColor);
+                // Reset scale is handled in update() via audio reactivity, 
+                // but we reset the base scaler here.
+                // Actually update() overwrites scale based on audio, so we just reset flags
+            }
 
             updatePositionFromAngle(angle) {
                 this.angle = angle;
@@ -335,18 +356,9 @@
                 this.mesh.position.z = -CONFIG.radius * Math.cos(angle);
                 this.mesh.position.y = this.currentY;
                 
-                // Orient orb to center
                 this.mesh.lookAt(0, this.currentY, 0);
                 
-                // Keep label facing camera
                 if (this.labelMesh) {
-                    // World rotation reset for billboard effect
-                    this.labelMesh.quaternion.copy(camera.quaternion);
-                    // Adjust to be upright
-                    // Actually, simple lookAt works better if child
-                    // Since it's child of orb, we need to counter orb rotation
-                    // Simplified: We'll update world rotation in render loop or just leave it attached for now
-                    // Just basic Billboard for now:
                     this.labelMesh.lookAt(camera.position);
                 }
 
@@ -361,16 +373,23 @@
                 
                 if (this.audio) this.audio.setVolume(normalized);
                 
-                this.material.opacity = 0.2 + (normalized * 0.8);
+                if (!this.isHighlighted) {
+                    this.material.opacity = 0.2 + (normalized * 0.8);
+                }
+                
                 this.coreMaterial.opacity = normalized;
-                this.core.scale.setScalar(0.5 + normalized);
+                
+                // Base scale from volume
+                const baseScale = 0.5 + normalized;
+                // If highlighted, boost it
+                const finalScale = this.isHighlighted ? baseScale * 1.2 : baseScale;
+                this.core.scale.setScalar(finalScale);
 
                 // Update Aurora based on volume
                 if (this.aurora) {
-                    this.aurora.material.opacity = normalized * 0.6; // Max opacity 0.6
-                    this.aurora.scale.setScalar(1 + normalized * 0.5); // Grow with volume
+                    this.aurora.material.opacity = normalized * 0.6; 
+                    this.aurora.scale.setScalar(1 + normalized * 0.5); 
                     
-                    // Spin aurora
                     this.aurora.rotation.y += 0.005 + (normalized * 0.02);
                     this.aurora.rotation.z += 0.002;
                 }
@@ -387,8 +406,10 @@
                 this.mesh.rotation.y = time * 0.2;
                 if (this.audio) {
                     const energy = this.audio.getAnalysis();
-                    const scale = 1 + (energy / 255) * 0.4;
-                    this.mesh.scale.setScalar(scale);
+                    const audioScale = 1 + (energy / 255) * 0.4;
+                    // Multiply with highlight scale
+                    const base = this.isHighlighted ? 1.2 : 1.0;
+                    this.mesh.scale.setScalar(audioScale * base);
                 }
             }
         }
@@ -425,6 +446,23 @@
             const gridHelper = new THREE.GridHelper(20, 20, 0x222222, 0x111111);
             scene.add(gridHelper);
 
+            // --- PROGRESS BAR ---
+            const barGroup = new THREE.Group();
+            const bgGeo = new THREE.PlaneGeometry(1.0, 0.05);
+            const bgMat = new THREE.MeshBasicMaterial({ color: 0x444444 });
+            const bg = new THREE.Mesh(bgGeo, bgMat);
+            const fillGeo = new THREE.PlaneGeometry(1.0, 0.05);
+            fillGeo.translate(0.5, 0, 0); 
+            const fillMat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
+            progressBarFill = new THREE.Mesh(fillGeo, fillMat);
+            progressBarFill.position.x = -0.5; 
+            progressBarFill.position.z = 0.005; 
+            progressBarFill.scale.x = 0; 
+            barGroup.add(bg, progressBarFill);
+            barGroup.position.set(0, 0.4, -1.2);
+            barGroup.rotation.x = -Math.PI / 6; 
+            scene.add(barGroup);
+
             const controls = new OrbitControls(camera, renderer.domElement);
             controls.target.set(0, 1.3, 0);
             controls.update();
@@ -432,9 +470,7 @@
             controllers = buildControllers();
             raycaster = new THREE.Raycaster();
 
-            // PRELOAD FONT
             const loader = new FontLoader();
-            // Using standard helvetiker from three examples
             loader.load('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/fonts/helvetiker_regular.typeface.json', function (response) {
                 loadedFont = response;
                 console.log("Font loaded");
@@ -444,7 +480,6 @@
             document.getElementById('btn-orch').addEventListener('click', () => loadTrack('orchestral'));
 
             window.addEventListener('resize', onWindowResize);
-            
             window.addEventListener('mousedown', onMouseDown);
             window.addEventListener('mousemove', onMouseMove);
             window.addEventListener('mouseup', onMouseUp);
@@ -462,7 +497,6 @@
         }
 
         async function loadTrack(trackKey) {
-            console.log("Start loading track:", trackKey);
             initAudioContext();
             const statusText = document.getElementById('status-text');
             const loadingBar = document.getElementById('loading-bar');
@@ -470,7 +504,6 @@
             statusText.innerText = "Initializing...";
             statusText.classList.remove('error-msg');
 
-            // ENVIRONMENT CHECK
             if (window.location.protocol === 'blob:' || window.location.href.includes('usercontent')) {
                 statusText.classList.add('error-msg');
                 statusText.innerHTML = "<b>⚠️ PREVIEW MODE ERROR:</b><br>Cannot load stems in this preview.<br>Please deploy to GitHub Pages.";
@@ -492,7 +525,6 @@
                 const path = fileList[i];
                 const displayPath = path.split('/').pop().replace(/%20/g, ' ');
                 statusText.innerText = `Loading ${displayPath}...`;
-                console.log(`Fetching ${path}`);
                 
                 try {
                     const response = await fetch(path);
@@ -546,7 +578,6 @@
         }
 
         function readyToPlay() {
-            console.log("Ready to play. Creating VR Button.");
             document.getElementById('overlay').innerHTML = "<h1>READY</h1><p>Put on your headset.</p>";
             document.getElementById('overlay').appendChild(VRButton.createButton(renderer));
             
@@ -556,6 +587,7 @@
                 });
             }
             
+            audioStartTime = audioCtx.currentTime;
             stems.forEach(s => s.startAudio());
         }
 
@@ -565,9 +597,11 @@
             for (let i = 0; i < 2; i++) {
                 const controller = renderer.xr.getController(i);
                 
+                // Visual Ray (Initially long)
                 const geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)]);
                 const line = new THREE.Line(geometry);
-                line.name = 'line'; line.scale.z = 5;
+                line.name = 'line'; 
+                line.scale.z = 5; // Default length
                 controller.add(line);
                 
                 controller.addEventListener('selectstart', onSelectStart);
@@ -582,46 +616,88 @@
             return result;
         }
 
+        // --- IMPROVED GRAB MECHANICS ---
+
         function onSelectStart(event) {
             const controller = event.target;
             const intersections = getIntersections(controller);
+            
             if (intersections.length > 0) {
-                const object = intersections[0].object;
-                const stem = stems.find(s => s.mesh === object || s.mesh === object.parent);
+                const hit = intersections[0];
+                const stem = stems.find(s => s.mesh === hit.object || s.mesh === hit.object.parent);
+                
                 if (stem) {
                     grabbedObject = stem;
                     grabbingController = controller;
                     
-                    const controllerPos = new THREE.Vector3();
-                    controller.getWorldPosition(controllerPos);
-                    const controllerAngle = Math.atan2(controllerPos.x, -controllerPos.z);
+                    // --- PRECISE RAY GRAB ---
+                    // Calculate offset from the HIT POINT, not the stem center
+                    const hitPoint = hit.point;
+                    const hitAngle = Math.atan2(hitPoint.x, -hitPoint.z);
                     
-                    grabAngleOffset = stem.angle - controllerAngle;
-                    grabHeightOffset = stem.currentY - controllerPos.y;
+                    // The offset is the difference between current stem angle and where we hit it
+                    grabAngleOffset = stem.angle - hitAngle;
+                    grabHeightOffset = stem.currentY - hitPoint.y;
 
-                    controller.attach(stem.mesh); 
-                    controller.remove(stem.mesh);
-                    scene.add(stem.mesh);
-                    stem.material.color.setHex(0xffffff); 
+                    // Don't attach/detach, just track logic
+                    // Adding visual feedback if needed? 
+                    // Usually we just let render loop handle movement
                 }
             }
         }
 
         function onSelectEnd() {
             if (grabbedObject) {
-                const originalColor = CONFIG.colors[grabbedObject.index % CONFIG.colors.length];
-                grabbedObject.material.color.setHex(originalColor);
                 grabbedObject = null;
                 grabbingController = null;
             }
         }
 
         function getIntersections(controller) {
+            try {
+                const tempMatrix = new THREE.Matrix4();
+                tempMatrix.identity().extractRotation(controller.matrixWorld);
+                raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+                raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+                return raycaster.intersectObjects(stems.map(s => s.mesh), true);
+            } catch(e) {
+                return [];
+            }
+        }
+
+        // --- MATH HELPER: Ray vs Cylinder ---
+        // Returns the point where the controller ray intersects the jukebox ring cylinder
+        function getRayCylinderIntersection(controller) {
             const tempMatrix = new THREE.Matrix4();
             tempMatrix.identity().extractRotation(controller.matrixWorld);
-            raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
-            raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
-            return raycaster.intersectObjects(stems.map(s => s.mesh), true);
+            const rayOrigin = new THREE.Vector3().setFromMatrixPosition(controller.matrixWorld);
+            const rayDir = new THREE.Vector3(0, 0, -1).applyMatrix4(tempMatrix).normalize();
+            
+            // Cylinder: x^2 + z^2 = R^2
+            // Ray: P = O + tD
+            // (Ox + tDx)^2 + (Oz + tDz)^2 = R^2
+            // A*t^2 + B*t + C = 0
+            
+            const A = rayDir.x * rayDir.x + rayDir.z * rayDir.z;
+            const B = 2 * (rayOrigin.x * rayDir.x + rayOrigin.z * rayDir.z);
+            const C = rayOrigin.x * rayOrigin.x + rayOrigin.z * rayOrigin.z - CONFIG.radius * CONFIG.radius;
+            
+            const delta = B * B - 4 * A * C;
+            
+            if (delta < 0) return null; // No intersection
+            
+            const t1 = (-B - Math.sqrt(delta)) / (2 * A);
+            const t2 = (-B + Math.sqrt(delta)) / (2 * A);
+            
+            // We want the smallest positive t (closest point in front)
+            let t = -1;
+            if (t1 > 0 && t2 > 0) t = Math.min(t1, t2);
+            else if (t1 > 0) t = t1;
+            else if (t2 > 0) t = t2;
+            
+            if (t < 0) return null;
+            
+            return rayOrigin.clone().add(rayDir.multiplyScalar(t));
         }
 
         function onMouseDown(e) {
@@ -635,13 +711,11 @@
                 const stem = stems.find(s => s.mesh === intersects[0].object || s.mesh === intersects[0].object.parent);
                 if (stem) {
                     grabbedObject = stem;
-                    stem.material.color.setHex(0xffffff);
-                    
+                    // Mouse logic remains simple 2D mapping
                     const mouseX = (e.clientX / window.innerWidth) * 2 - 1;
                     const mouseY = -(e.clientY / window.innerHeight) * 2 + 1;
                     const mouseAngle = mouseX * (Math.PI / 1.5);
                     const mouseHeight = ((mouseY + 1) / 2) * (CONFIG.yMax - CONFIG.yMin + 0.5) + (CONFIG.yMin - 0.2);
-                    
                     grabAngleOffset = stem.angle - mouseAngle;
                     grabHeightOffset = stem.currentY - mouseHeight;
                 }
@@ -649,50 +723,108 @@
         }
 
         function onMouseMove(e) {
-            if (!isMouseDown || !grabbedObject || renderer.xr.isPresenting) return;
+            if (renderer.xr.isPresenting) return;
             
-            const x = (e.clientX / window.innerWidth) * 2 - 1;
-            const y = -(e.clientY / window.innerHeight) * 2 + 1;
+            // Mouse Highlight Logic
+            mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+            mouseRaycaster.setFromCamera(mouse, camera);
             
-            const rawAngle = x * (Math.PI / 1.5);
-            const targetAngle = rawAngle + grabAngleOffset;
-            
-            const rawHeight = ((y + 1) / 2) * (CONFIG.yMax - CONFIG.yMin + 0.5) + (CONFIG.yMin - 0.2);
-            const targetHeight = rawHeight + grabHeightOffset;
-
-            grabbedObject.setTargetState(targetAngle, targetHeight);
+            if (!isMouseDown) {
+                // Reset highlights
+                stems.forEach(s => s.unhighlight());
+                const intersects = mouseRaycaster.intersectObjects(stems.map(s => s.mesh), true);
+                if (intersects.length > 0) {
+                    const stem = stems.find(s => s.mesh === intersects[0].object || s.mesh === intersects[0].object.parent);
+                    if (stem) stem.highlight();
+                }
+            } else if (grabbedObject) {
+                // Dragging
+                const x = (e.clientX / window.innerWidth) * 2 - 1;
+                const y = -(e.clientY / window.innerHeight) * 2 + 1;
+                const rawAngle = x * (Math.PI / 1.5);
+                const targetAngle = rawAngle + grabAngleOffset;
+                const rawHeight = ((y + 1) / 2) * (CONFIG.yMax - CONFIG.yMin + 0.5) + (CONFIG.yMin - 0.2);
+                const targetHeight = rawHeight + grabHeightOffset;
+                grabbedObject.setTargetState(targetAngle, targetHeight);
+            }
         }
 
         function onMouseUp() {
-            if (grabbedObject && !renderer.xr.isPresenting) {
-                const originalColor = CONFIG.colors[grabbedObject.index % CONFIG.colors.length];
-                grabbedObject.material.color.setHex(originalColor);
-                grabbedObject = null;
-            }
             isMouseDown = false;
+            grabbedObject = null;
         }
 
         function render(time) {
             stems.forEach(stem => stem.update(time / 1000));
 
-            if (grabbedObject && grabbingController) {
-                const controllerPos = new THREE.Vector3();
-                grabbingController.getWorldPosition(controllerPos);
-                
-                const rawAngle = Math.atan2(controllerPos.x, -controllerPos.z); 
-                const targetAngle = rawAngle + grabAngleOffset;
-                const targetHeight = controllerPos.y + grabHeightOffset;
-                
-                grabbedObject.setTargetState(targetAngle, targetHeight);
+            // Progress Bar Update
+            if (progressBarFill && stems.length > 0 && stems[0].audio.buffer) {
+                const duration = stems[0].audio.buffer.duration;
+                const elapsed = audioCtx.currentTime - audioStartTime;
+                const progress = (elapsed % duration) / duration;
+                progressBarFill.scale.x = Math.max(0, Math.min(1, progress));
             }
 
-            if (!grabbedObject) {
-                if (intersectedObject) intersectedObject = null;
-                controllers.forEach(c => {
-                    const hits = getIntersections(c);
-                    if (hits.length > 0) intersectedObject = hits[0].object;
-                });
-            }
+            // RESET HIGHLIGHTS EVERY FRAME
+            stems.forEach(s => s.unhighlight());
+
+            // CONTROLLER LOOP
+            controllers.forEach(controller => {
+                const line = controller.getObjectByName('line');
+                if(!line) return;
+
+                // 1. Raycast for Intersections (Highlighting)
+                // Note: If we are dragging, we might ignore this or keep it.
+                // It's better to keep checking to draw the ray correctly if we are pointing at something else?
+                // No, if dragging, the ray should probably visualize the connection to the grabbed object?
+                // Standard VR: If dragging, ray disappears or points to object.
+                // Let's stick to standard pointer logic.
+                
+                const hits = getIntersections(controller);
+                
+                if (hits.length > 0) {
+                    const hit = hits[0];
+                    line.scale.z = hit.distance; // Ray touches object
+                    
+                    const stem = stems.find(s => s.mesh === hit.object || s.mesh === hit.object.parent);
+                    if (stem && !grabbedObject) {
+                        stem.highlight();
+                    }
+                } else {
+                    line.scale.z = 5; // Default long ray
+                }
+                
+                // 2. Drag Logic
+                if (grabbedObject && grabbingController === controller) {
+                    // Force highlight on grabbed object
+                    grabbedObject.highlight();
+                    
+                    // Ray intersects Cylinder to determine position
+                    const hitPoint = getRayCylinderIntersection(controller);
+                    
+                    if (hitPoint) {
+                        // Calculate new targets based on where the ray hits the "track wall"
+                        const hitAngle = Math.atan2(hitPoint.x, -hitPoint.z);
+                        const targetAngle = hitAngle + grabAngleOffset;
+                        const targetHeight = hitPoint.y + grabHeightOffset;
+                        
+                        grabbedObject.setTargetState(targetAngle, targetHeight);
+                        
+                        // Optional: Visualize ray touching the hit point
+                        const dist = controller.position.distanceTo(hitPoint);
+                        // Convert world distance to local scale? 
+                        // line is length 1 scaled by Z. 
+                        // Controller is parent.
+                        // Ideally we scale line to distance. 
+                        // Simplified: just set scale to distance
+                        // But hitPoint is world. 
+                        const worldOrigin = new THREE.Vector3().setFromMatrixPosition(controller.matrixWorld);
+                        line.scale.z = worldOrigin.distanceTo(hitPoint);
+                    }
+                }
+            });
+
             renderer.render(scene, camera);
         }
 
