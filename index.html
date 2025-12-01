@@ -70,7 +70,8 @@
             <p>
                 <b>VR MIXING ENVIRONMENT</b><br>
                 Put on your headset.<br>
-                <b>Trigger/Click</b> to Grab. <b>Vertical</b> = Volume. <b>Horizontal</b> = Pan.
+                <b>Trigger/Click</b> to Grab. <b>Tap</b> to Mute/Unmute.<br>
+                <b>Vertical</b> = Volume. <b>Horizontal</b> = Pan.
             </p>
 
             <p style="margin-bottom: 10px; color: #0ff;">SELECT A TRACK TO BEGIN:</p>
@@ -113,7 +114,6 @@
         };
 
         // --- TRACK CONFIGURATION ---
-        // Ensure filenames match exactly what is in your repo
         const TRACKS = {
             jazz: [
                 'stems/jazz/0%20Drums.mp3',
@@ -140,6 +140,7 @@
         let stems = [];
         let audioCtx;
         
+        let intersectedObject = null;
         let grabbedObject = null;
         let grabbingController = null;
         let loadedFont = null;
@@ -147,6 +148,7 @@
         // Grab Mechanics State
         let grabAngleOffset = 0;
         let grabHeightOffset = 0;
+        let clickStartTime = 0; // For detecting taps vs drags
         
         let audioStartTime = 0;
         let progressBarFill = null;
@@ -329,6 +331,21 @@
                 this.targetAngle = angle;
                 const clampedH = Math.max(CONFIG.yMin - 0.2, Math.min(CONFIG.yMax + 0.2, height));
                 this.targetY = clampedH;
+            }
+            
+            // New Tap-to-Mute Logic
+            toggleMute() {
+                // If currently near bottom (muted), jump to top (unmuted)
+                // If anywhere else, jump to bottom (mute)
+                const midPoint = (CONFIG.yMin + CONFIG.yMax) / 2;
+                
+                if (this.targetY < midPoint) {
+                    // Unmute to Max Volume
+                    this.setTargetState(this.targetAngle, CONFIG.yMax);
+                } else {
+                    // Mute to Min Volume
+                    this.setTargetState(this.targetAngle, CONFIG.yMin);
+                }
             }
             
             highlight() {
@@ -630,6 +647,9 @@
                     grabbedObject = stem;
                     grabbingController = controller;
                     
+                    // START CLICK TIMER
+                    clickStartTime = performance.now();
+                    
                     const hitPoint = hit.point;
                     const hitAngle = Math.atan2(hitPoint.x, -hitPoint.z);
                     
@@ -646,6 +666,12 @@
 
         function onSelectEnd() {
             if (grabbedObject) {
+                // DETECT TAP (If released quickly)
+                const elapsed = performance.now() - clickStartTime;
+                if (elapsed < 250) { // 250ms threshold
+                    grabbedObject.toggleMute();
+                }
+                
                 grabbedObject = null;
                 grabbingController = null;
             }
@@ -693,6 +719,7 @@
         function onMouseDown(e) {
             if (renderer.xr.isPresenting) return;
             isMouseDown = true;
+            clickStartTime = performance.now(); // Mouse click start
             mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
             mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
             mouseRaycaster.setFromCamera(mouse, camera);
@@ -737,6 +764,12 @@
         }
 
         function onMouseUp() {
+            if (grabbedObject) {
+                const elapsed = performance.now() - clickStartTime;
+                if (elapsed < 250) {
+                    grabbedObject.toggleMute();
+                }
+            }
             isMouseDown = false;
             grabbedObject = null;
         }
